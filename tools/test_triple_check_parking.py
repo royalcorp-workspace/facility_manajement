@@ -383,10 +383,66 @@ def test_scenario_8_polygon_clear_hysteresis():
     print(f"  [PASS] Scenario 8 Passed (polygon_clear_since hysteresis 5s bekerja, dwell={s1.dwell_duration:.1f}s).")
 
 
+def test_scenario_9_exclusive_slot_assignment():
+    """
+    Skenario 9: Aturan Exclusive Slot Assignment (1 Mobil = Maksimal 1 Slot).
+    Memastikan mobil yang berada di perbatasan dua poligon bersebelahan
+    hanya mengokupansi 1 slot yang memiliki skor/overlap tertinggi,
+    dan slot lainnya tetap VACANT.
+    Jika satu slot sempat mengklaim track_id tersebut tapi kemudian kalah afinitas,
+    slot yang kalah segera dibebaskan menjadi VACANT.
+    """
+    print("[RUN] Scenario 9: Double-Claim Prevention & Exclusive Slot Assignment...")
+    tracker = SmartParkingTracker(dwell_threshold_sec=10.0)
+
+    # Dua slot bersebelahan dengan jeda 10px
+    # Slot 1: x in [100, 200], y in [100, 200]
+    # Slot 2: x in [210, 310], y in [100, 200]
+    slot1 = create_dummy_zone("zone_01", 100, 100, 200, 200)
+    slot2 = create_dummy_zone("zone_02", 210, 100, 310, 200)
+    polys = [slot1, slot2]
+    scale = 1.0
+    t = 7000.0
+
+    # Mobil #1 berada di Slot 2, tapi sedikit mepet ke Slot 1
+    # Bbox: [205, 110, 285, 190] -> cx = 245 (jauh lebih dekat ke pusat Slot 2: cx=260 vs Slot 1: cx=150)
+    car1 = create_vehicle_track(track_id=1, bbox=(205, 110, 285, 190))
+
+    # Frame 1: Mobil masuk (warmup false)
+    tracker.update([car1], polys, scale, scale, t)
+    # Lanjut dwell 11s -> seharusnya Slot 2 OCCUPIED, Slot 1 VACANT
+    res = tracker.update([car1], polys, scale, scale, t + 11.0)
+
+    s1 = tracker.slot_states["zone_01"]
+    s2 = tracker.slot_states["zone_02"]
+
+    assert s2.phase == "OCCUPIED", f"Slot 2 harusnya OCCUPIED, dapat {s2.phase}"
+    assert s2.track_id == 1, f"Slot 2 harusnya track_id=1, dapat {s2.track_id}"
+
+    assert s1.phase == "VACANT", f"Slot 1 harusnya tetap VACANT (Double claim!), dapat {s1.phase}"
+    assert s1.track_id is None, f"Slot 1 track_id harusnya None, dapat {s1.track_id}"
+    assert res["occupied_slots"] == 1, f"Harusnya cuma 1 slot occupied, dapat {res['occupied_slots']}"
+    assert res["available_slots"] == 1, f"Harusnya 1 slot available, dapat {res['available_slots']}"
+
+    # Uji Real-time Release:
+    # Misalkan sebelumnya slot 1 secara paksa terkunci ke track_id=1
+    s1.phase = "OCCUPIED"
+    s1.track_id = 1
+    s1.dwell_duration = 15.0
+
+    # Di frame berikutnya, mobil 1 tetap di slot 2 (pemenang eksklusif)
+    tracker.update([car1], polys, scale, scale, t + 12.0)
+    assert s1.phase == "VACANT", f"Slot 1 harusnya langsung dilepas ke VACANT, dapat {s1.phase}"
+    assert s1.track_id is None, f"Slot 1 track_id harusnya direset ke None, dapat {s1.track_id}"
+    assert s2.phase == "OCCUPIED"
+
+    print("  [PASS] Scenario 9 Passed (1 Mobil mengklaim maksimal 1 slot, double claim dicegah).")
+
+
 if __name__ == "__main__":
     print("==================================================================")
     print("TRIPLE-CHECK PARKING VERIFICATION & DECLUTTERING TEST SUITE")
-    print("(v2 — Anti-ID Churn & Spatial Slot Stabilization)")
+    print("(v2 — Anti-ID Churn, Spatial Slot Stabilization & Exclusive Slot Assignment)")
     print("==================================================================")
     try:
         test_scenario_1_happy_path()
@@ -397,8 +453,9 @@ if __name__ == "__main__":
         test_scenario_6_visual_decluttering()
         test_scenario_7_anti_id_churn()
         test_scenario_8_polygon_clear_hysteresis()
+        test_scenario_9_exclusive_slot_assignment()
         print("==================================================================")
-        print("RESULT: ALL 8 TESTS PASSED (100% SUCCESS)")
+        print("RESULT: ALL 9 TESTS PASSED (100% SUCCESS)")
         print("==================================================================")
     except AssertionError as e:
         print(f"\n[FAIL] Test Assertion Error: {e}")

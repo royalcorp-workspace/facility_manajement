@@ -23,6 +23,7 @@ Fitur:
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
@@ -208,11 +209,11 @@ class SmartParkingTracker:
         lower_pt = (cx, float(y1 + (y2 - y1) * 0.75))
         center_pt = (cx, float((y1 + y2) / 2.0))
 
-        # Syarat Spasial A (kuat): titik kontak roda / lower body / center di dalam poligon slot (margin toleransi -10px)
+        # Syarat Spasial A (kuat): titik kontak roda / lower body / center di dalam poligon slot (margin toleransi ketat -3.0px)
         if (
-            cv2.pointPolygonTest(pts_scaled, wheel_pt, True) >= -10.0
-            or cv2.pointPolygonTest(pts_scaled, lower_pt, True) >= -10.0
-            or cv2.pointPolygonTest(pts_scaled, center_pt, True) >= -10.0
+            cv2.pointPolygonTest(pts_scaled, wheel_pt, True) >= -3.0
+            or cv2.pointPolygonTest(pts_scaled, lower_pt, True) >= -3.0
+            or cv2.pointPolygonTest(pts_scaled, center_pt, True) >= -3.0
         ):
             return True
 
@@ -250,6 +251,8 @@ class SmartParkingTracker:
             if (t.is_confirmed or is_warmup) and (t.class_label in self.vehicle_classes)
         ]
 
+        # ── Pre-inisialisasi Slot States & Pre-komputasi Geometri Poligon ──────
+        slot_geometries: Dict[str, Dict[str, Any]] = {}
         for idx, slot in enumerate(active_slots):
             slot_id = slot.zone_id
             # Pairing suffix index: zone_01 -> "01", zone_07 -> "07"
@@ -267,38 +270,97 @@ class SmartParkingTracker:
                     label=slot.label or f"Slot {slot_num}",
                 )
 
-            state = self.slot_states[slot_id]
             pts_scaled = np.array(
                 [[int(pt.x * sx), int(pt.y * sy)] for pt in slot.points],
                 dtype=np.int32,
             )
+            M = cv2.moments(pts_scaled)
+            area = M["m00"]
+            slot_cx = M["m10"] / (area + 1e-5) if area > 0 else float(np.mean(pts_scaled[:, 0]))
+            slot_cy = M["m01"] / (area + 1e-5) if area > 0 else float(np.mean(pts_scaled[:, 1]))
+            rx, ry, rw, rh = cv2.boundingRect(pts_scaled)
+            slot_bbox = (float(rx), float(ry), float(rx + rw), float(ry + rh))
 
-            # Cari apakah ada kontak kendaraan dalam slot ini (wheel contact, lower body, centroid, atau IoU anchor)
-            matched_track: Optional[TrackResult] = None
+            slot_geometries[slot_id] = {
+                "pts_scaled": pts_scaled,
+                "cx": slot_cx,
+                "cy": slot_cy,
+                "diag": max(10.0, math.hypot(rw, rh)),
+                "bbox": slot_bbox,
+            }
+
+        # ── Exclusive Slot Assignment (Bipartite Matching: 1 Mobil = Max 1 Slot) ──
+        # Evaluasi seluruh kandidat pasangan (slot, vehicle)
+        # Menghitung skor afinitas: kedalaman penetrasi poligon, kedekatan ke centroid, IoU bbox, dan hysteresis bonus
+        candidates: List[Tuple[float, str, TrackResult]] = []
+
+        for slot in active_slots:
+            s_id = slot.zone_id
+            state = self.slot_states[s_id]
+            geom = slot_geometries[s_id]
+            pts_scaled = geom["pts_scaled"]
+            slot_cx = geom["cx"]
+            slot_cy = geom["cy"]
+            slot_diag = geom["diag"]
+            slot_bbox = geom["bbox"]
+
             for vt in vehicle_tracks:
                 x1, y1, x2, y2 = vt.bbox
                 cx = float((x1 + x2) / 2.0)
+                cy = float((y1 + y2) / 2.0)
                 wheel_pt = (cx, float(y2))
                 lower_pt = (cx, float(y1 + (y2 - y1) * 0.75))
-                center_pt = (cx, float((y1 + y2) / 2.0))
+                center_pt = (cx, cy)
 
-                # Toleransi spasial margin 10px (anti-flickering roda mepet bibir slot)
-                is_contact = (
-                    cv2.pointPolygonTest(pts_scaled, wheel_pt, True) >= -10.0
-                    or cv2.pointPolygonTest(pts_scaled, lower_pt, True) >= -10.0
-                    or cv2.pointPolygonTest(pts_scaled, center_pt, True) >= -10.0
-                )
+                # Ukur penetrasi titik kontak ke poligon (margin toleransi ketat -3.0px)
+                d_wheel = cv2.pointPolygonTest(pts_scaled, wheel_pt, True)
+                d_lower = cv2.pointPolygonTest(pts_scaled, lower_pt, True)
+                d_center = cv2.pointPolygonTest(pts_scaled, center_pt, True)
+                d_max = max(d_wheel, d_lower, d_center)
 
-                # Toleransi IoU anchor: jika slot sudah OCCUPIED dan posisi mobil stabil dengan last_bbox
-                if not is_contact and state.phase == "OCCUPIED" and state.last_bbox is not None:
-                    if bbox_iou(vt.bbox, state.last_bbox) >= 0.30:
-                        is_contact = True
+                # IoU bbox kendaraan vs slot bounding box
+                iou_slot = bbox_iou(vt.bbox, slot_bbox)
 
-                if is_contact:
-                    matched_track = vt
-                    break
+                # IoU anchor dengan bbox kendaraan yang tersimpan di slot OCCUPIED
+                iou_anchor = 0.0
+                if state.phase == "OCCUPIED" and state.last_bbox is not None:
+                    iou_anchor = bbox_iou(vt.bbox, state.last_bbox)
 
-            # ── State Transitions ─────────────────────────────────────────
+                # Kriteria kandidat: memiliki kontak spasial nyata ATAU kecocokan anchor stabil
+                if d_max >= -3.0 or iou_anchor >= 0.25:
+                    dist_to_center = math.hypot(cx - slot_cx, cy - slot_cy)
+                    dist_norm = dist_to_center / slot_diag
+
+                    # Bonus kontinuitas untuk slot yang sudah mantap OCCUPIED oleh ID yang sama
+                    continuity_bonus = 25.0 if (state.track_id == vt.track_id and state.phase == "OCCUPIED") else 0.0
+
+                    # Formula Skor Afinitas Komprehensif:
+                    # Semakin dalam di dalam poligon (d_max tinggi), semakin dekat ke pusat slot (dist_norm rendah),
+                    # dan semakin besar IoU dengan slot, semakin tinggi skornya.
+                    score = (d_max * 2.5) - (dist_norm * 30.0) + (iou_slot * 35.0) + (iou_anchor * 30.0) + continuity_bonus
+                    candidates.append((score, s_id, vt))
+
+        # Urutkan kandidat dari skor afinitas tertinggi ke terendah (Greedy Optimal Assignment)
+        candidates.sort(key=lambda c: c[0], reverse=True)
+
+        assigned_slot_to_track: Dict[str, TrackResult] = {}
+        assigned_track_ids: Set[int] = set()
+
+        for score, s_id, vt in candidates:
+            # 1 Slot hanya boleh diisi maksimal 1 mobil, dan 1 Mobil hanya boleh mengklaim maksimal 1 slot!
+            if s_id not in assigned_slot_to_track and vt.track_id not in assigned_track_ids:
+                assigned_slot_to_track[s_id] = vt
+                assigned_track_ids.add(vt.track_id)
+
+        # ── State Transitions Tiap Slot ────────────────────────────────────────
+        for slot in active_slots:
+            slot_id = slot.zone_id
+            state = self.slot_states[slot_id]
+            geom = slot_geometries[slot_id]
+            pts_scaled = geom["pts_scaled"]
+
+            matched_track = assigned_slot_to_track.get(slot_id)
+
             if matched_track is not None:
                 # Kendaraan terdeteksi di dalam poligon — 3 cabang kepemilikan:
                 if state.track_id == matched_track.track_id:
@@ -339,7 +401,6 @@ class SmartParkingTracker:
                     state.last_bbox = matched_track.bbox
                     state.polygon_clear_since = None
 
-
                 if is_warmup:
                     # Evaluasi baseline okupansi slot pada masa cold-start:
                     # Kendaraan yang terdeteksi di dalam poligon langsung diberi status OCCUPIED
@@ -365,7 +426,18 @@ class SmartParkingTracker:
 
             else:
                 # Tidak ada kendaraan terdeteksi di dalam poligon
-                if state.phase == "ENTERING":
+                if state.track_id is not None and state.track_id in assigned_track_ids:
+                    # Mobil ini telah terbukti terparkir di slot lain secara eksklusif (Exclusive Assignment)
+                    # Segera bebaskan slot ini kembali ke status VACANT tanpa menunggu grace period
+                    state.phase = "VACANT"
+                    state.track_id = None
+                    state.vehicle_class = None
+                    state.first_seen_time = None
+                    state.dwell_duration = 0.0
+                    state.leaving_since = None
+                    state.polygon_clear_since = None
+                    state.tripwire_crossed_in_time = None
+                elif state.phase == "ENTERING":
                     # Timeout jika sinyal masuk sudah lewat tanpa kendaraan masuk poligon
                     if (
                         state.tripwire_crossed_in_time is not None
