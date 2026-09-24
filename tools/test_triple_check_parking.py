@@ -364,23 +364,23 @@ def test_scenario_8_polygon_clear_hysteresis():
     assert s1.polygon_clear_since is None, \
         "polygon_clear_since harusnya None setelah kendaraan terdeteksi kembali"
 
-    # ─── Oklusi panjang 3.5 detik (melampaui vacant_confirm_sec = 3.0s) ───
+    # ─── Oklusi panjang 5.5 detik (melampaui vacant_confirm_sec = 5.0s) ───
     # Simulasi: kendaraan benar-benar pergi
     tracker.update([], polys, scale, scale, t + 12.0)   # +0.8s hilang, mulai hitung
-    tracker.update([], polys, scale, scale, t + 13.5)   # +1.5s lebih
+    tracker.update([], polys, scale, scale, t + 14.5)   # +3.3s hilang, masih dalam grace period 5s
     assert s1.phase == "OCCUPIED", \
-        f"Belum 3s poligon kosong, harusnya masih OCCUPIED, dapat: {s1.phase}"
+        f"Belum 5s poligon kosong, harusnya masih OCCUPIED, dapat: {s1.phase}"
 
-    # Lewati 3s penuh poligon kosong → baru boleh transisi ke LEAVING
-    tracker.update([], polys, scale, scale, t + 15.5)   # ~3.5s hilang total
+    # Lewati 5s penuh poligon kosong → baru boleh transisi ke LEAVING
+    tracker.update([], polys, scale, scale, t + 18.0)   # ~6.8s hilang total (melampaui 5s)
     assert s1.phase == "LEAVING", \
-        f"Setelah >= 3s poligon kosong harusnya LEAVING, dapat: {s1.phase}"
+        f"Setelah >= 5s poligon kosong harusnya LEAVING, dapat: {s1.phase}"
 
     # Konfirmasi akhir: dwell tidak pernah direset selama proses
     assert s1.dwell_duration >= 10.0, \
         f"Dwell harusnya tetap >= 10s selama transisi, dapat: {s1.dwell_duration}"
 
-    print(f"  [PASS] Scenario 8 Passed (polygon_clear_since hysteresis 3s bekerja, dwell={s1.dwell_duration:.1f}s).")
+    print(f"  [PASS] Scenario 8 Passed (polygon_clear_since hysteresis 5s bekerja, dwell={s1.dwell_duration:.1f}s).")
 
 
 if __name__ == "__main__":

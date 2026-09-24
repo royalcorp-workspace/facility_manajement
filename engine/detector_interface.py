@@ -24,7 +24,7 @@ class DetectorBase(ABC):
 
     def __init__(
         self,
-        confidence_threshold: float = 0.45,
+        confidence_threshold: float = 0.25,
         iou_threshold: float = 0.45,
         target_classes: Optional[list[str]] = None,
     ) -> None:

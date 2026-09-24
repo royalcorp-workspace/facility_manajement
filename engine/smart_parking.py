@@ -58,9 +58,10 @@ class SlotState:
     # --- Anti-ID Churn / Spatial Stabilization Fields ---
     last_bbox: Optional[Tuple[float, float, float, float]] = None
     # Timestamp pertama kali poligon benar-benar terbukti kosong secara fisik.
-    # Slot hanya boleh transisi OCCUPIED->LEAVING setelah area kosong >= vacant_confirm_sec.
+    # Slot hanya boleh transisi OCCUPIED->LEAVING setelah area kosong >= vacant_confirm_sec (anti-flicker 5 detik).
     polygon_clear_since: Optional[float] = None
-    vacant_confirm_sec: float = 3.0
+    vacant_confirm_sec: float = 5.0
+    exit_grace_sec: float = 2.0
 
     @property
     def occupied(self) -> bool:
@@ -207,11 +208,11 @@ class SmartParkingTracker:
         lower_pt = (cx, float(y1 + (y2 - y1) * 0.75))
         center_pt = (cx, float((y1 + y2) / 2.0))
 
-        # Syarat Spasial A (kuat): titik kontak roda / lower body / center di dalam poligon slot
+        # Syarat Spasial A (kuat): titik kontak roda / lower body / center di dalam poligon slot (margin toleransi -10px)
         if (
-            cv2.pointPolygonTest(pts_scaled, wheel_pt, False) >= 0
-            or cv2.pointPolygonTest(pts_scaled, lower_pt, False) >= 0
-            or cv2.pointPolygonTest(pts_scaled, center_pt, False) >= 0
+            cv2.pointPolygonTest(pts_scaled, wheel_pt, True) >= -10.0
+            or cv2.pointPolygonTest(pts_scaled, lower_pt, True) >= -10.0
+            or cv2.pointPolygonTest(pts_scaled, center_pt, True) >= -10.0
         ):
             return True
 
@@ -272,7 +273,7 @@ class SmartParkingTracker:
                 dtype=np.int32,
             )
 
-            # Cari apakah ada kontak kendaraan dalam slot ini (wheel contact, lower body, atau centroid)
+            # Cari apakah ada kontak kendaraan dalam slot ini (wheel contact, lower body, centroid, atau IoU anchor)
             matched_track: Optional[TrackResult] = None
             for vt in vehicle_tracks:
                 x1, y1, x2, y2 = vt.bbox
@@ -280,11 +281,20 @@ class SmartParkingTracker:
                 wheel_pt = (cx, float(y2))
                 lower_pt = (cx, float(y1 + (y2 - y1) * 0.75))
                 center_pt = (cx, float((y1 + y2) / 2.0))
-                if (
-                    cv2.pointPolygonTest(pts_scaled, wheel_pt, False) >= 0
-                    or cv2.pointPolygonTest(pts_scaled, lower_pt, False) >= 0
-                    or cv2.pointPolygonTest(pts_scaled, center_pt, False) >= 0
-                ):
+
+                # Toleransi spasial margin 10px (anti-flickering roda mepet bibir slot)
+                is_contact = (
+                    cv2.pointPolygonTest(pts_scaled, wheel_pt, True) >= -10.0
+                    or cv2.pointPolygonTest(pts_scaled, lower_pt, True) >= -10.0
+                    or cv2.pointPolygonTest(pts_scaled, center_pt, True) >= -10.0
+                )
+
+                # Toleransi IoU anchor: jika slot sudah OCCUPIED dan posisi mobil stabil dengan last_bbox
+                if not is_contact and state.phase == "OCCUPIED" and state.last_bbox is not None:
+                    if bbox_iou(vt.bbox, state.last_bbox) >= 0.30:
+                        is_contact = True
+
+                if is_contact:
                     matched_track = vt
                     break
 
@@ -383,7 +393,7 @@ class SmartParkingTracker:
                 elif state.phase == "LEAVING":
                     # Konfirmasi poligon kosong setelah masa leave / grace period
                     leave_time = state.leaving_since if state.leaving_since is not None else state.last_seen_time
-                    if leave_time > 0 and (current_time - leave_time) > 2.0:
+                    if leave_time > 0 and (current_time - leave_time) >= state.exit_grace_sec:
                         state.phase = "VACANT"
                         state.track_id = None
                         state.vehicle_class = None

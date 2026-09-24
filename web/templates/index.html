@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="api-key" content="{{ api_key }}">
   <title>Facility Management — Live Surveillance Hub</title>
   <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
@@ -41,7 +42,7 @@
       {% set default_cam = cameras[0].camera_id if cameras else 'cam_01' %}
       <img 
         id="stream-feed" 
-        src="/video_feed/{{ default_cam }}" 
+        src="/video_feed/{{ default_cam }}{% if api_key %}?api_key={{ api_key }}{% endif %}" 
         alt="Live Stream Feed {{ default_cam }}" 
         class="stream-feed"
       >
@@ -61,7 +62,7 @@
   <section class="kpi-grid">
     <div class="kpi-card"><span class="kpi-label">Kamera Aktif</span><span class="kpi-value" id="kpi-active-cameras">-</span></div>
     <div class="kpi-card"><span class="kpi-label">Total Frame</span><span class="kpi-value" id="kpi-total-frames">-</span></div>
-    <div class="kpi-card"><span class="kpi-label">Insiden</span><span class="kpi-value" id="kpi-total-incidents">-</span></div>
+    <div class="kpi-card"><span class="kpi-label">Insiden</span><spa  n class="kpi-value" id="kpi-total-incidents">-</span></div>
     <div class="kpi-card"><span class="kpi-label">Resolusi</span><span class="kpi-value">640x360</span></div>
   </section>
   <section class="incident-section">
@@ -70,6 +71,9 @@
   ========================================================================
   -->
 
+  <script>
+    window.FACILITY_API_KEY = "{{ api_key }}";
+  </script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

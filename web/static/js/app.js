@@ -2,12 +2,13 @@
  * Facility Management — Web Dashboard Client Application (Fase 5).
  * Zero inline script.
  * Features:
- *   - Real-time Clock UTC
+ *   - Real-time Clock UTC / WIB
  *   - Dynamic Camera Switcher & Status Badges (GET /api/cameras)
  *   - Telemetry Polling (KPI Metrics & Camera HUDs)
  *   - Incident Audit Trail Table (GET /api/incidents)
  *   - Interactive Incident Resolve (POST /api/incidents/{id}/resolve)
  *   - High-Res 1080p Evidence Snapshot Modal Viewer
+ *   - Automatic API Key injection (X-API-Key header & ?api_key= query param)
  */
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -17,6 +18,32 @@ document.addEventListener("DOMContentLoaded", () => {
   initIncidentsPolling();
   initEvidenceModal();
 });
+
+/* ── Helper: API Key & Authenticated Fetch ─────────────────── */
+function getApiKey() {
+  return (
+    window.FACILITY_API_KEY ||
+    document.querySelector('meta[name="api-key"]')?.getAttribute("content") ||
+    ""
+  );
+}
+
+function buildAuthUrl(url) {
+  const apiKey = getApiKey();
+  if (!apiKey || url.includes("api_key=")) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}api_key=${encodeURIComponent(apiKey)}`;
+}
+
+async function apiFetch(url, options = {}) {
+  const apiKey = getApiKey();
+  const headers = new Headers(options.headers || {});
+  if (apiKey) {
+    headers.set("X-API-Key", apiKey);
+  }
+  const finalUrl = buildAuthUrl(url);
+  return fetch(finalUrl, { ...options, headers });
+}
 
 /* ── 1. Live Clock ─────────────────────────────────────────── */
 function initClock() {
@@ -44,9 +71,9 @@ function initDynamicCameraSwitcher() {
   switcher.addEventListener("change", (e) => {
     const selected = e.target.value;
 
-    // Single fullscreen kiosk stream feed
+    // Single fullscreen kiosk stream feed dengan query param api_key
     if (streamFeed && selected) {
-      streamFeed.src = `/video_feed/${selected}`;
+      streamFeed.src = buildAuthUrl(`/video_feed/${selected}`);
       const hudCam = document.getElementById("hud-camera-id");
       if (hudCam) hudCam.textContent = selected.toUpperCase();
       pollActiveStreamStatus(selected);
@@ -74,7 +101,7 @@ function initDynamicCameraSwitcher() {
   async function pollActiveStreamStatus(camId) {
     if (!camId || camId === "all") return;
     try {
-      const resp = await fetch(`/api/status/${camId}`);
+      const resp = await apiFetch(`/api/status/${camId}`);
       if (!resp.ok) return;
       const data = await resp.json();
       const hudStatus = document.getElementById("hud-status");
@@ -100,7 +127,7 @@ function initDynamicCameraSwitcher() {
   async function refreshCameraPills() {
     if (!pillsContainer) return;
     try {
-      const resp = await fetch("/api/cameras");
+      const resp = await apiFetch("/api/cameras");
       if (!resp.ok) return;
       const cameras = await resp.json();
 
@@ -136,7 +163,7 @@ function initTelemetryPolling() {
     for (const card of cameraCards) {
       const camId = card.getAttribute("data-camera-id");
       try {
-        const resp = await fetch(`/api/status/${camId}`);
+        const resp = await apiFetch(`/api/status/${camId}`);
         if (!resp.ok) continue;
         const data = await resp.json();
 
@@ -174,7 +201,7 @@ function initIncidentsPolling() {
 
   async function fetchIncidents() {
     try {
-      const resp = await fetch("/api/incidents");
+      const resp = await apiFetch("/api/incidents");
       if (!resp.ok) return;
       const incidents = await resp.json();
       _cachedIncidents = incidents;
@@ -260,7 +287,7 @@ function initIncidentsPolling() {
       target.textContent = "Menyimpan...";
 
       try {
-        const resp = await fetch(`/api/incidents/${incId}/resolve`, {
+        const resp = await apiFetch(`/api/incidents/${incId}/resolve`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
         });
@@ -334,7 +361,7 @@ function openEvidenceModal(ev) {
   if (!modal || !modalImg || !metaGrid) return;
 
   const fileName = ev.snapshot_path ? ev.snapshot_path.split(/[\\\\/]/).pop() : "";
-  const snapUrl = `/snapshots/${ev.camera_id}/${fileName}`;
+  const snapUrl = buildAuthUrl(`/snapshots/${ev.camera_id}/${fileName}`);
 
   modalTitle.textContent = `Insiden #${ev.id} — ${ev.event_type.toUpperCase()} [${ev.camera_id}]`;
 
@@ -403,4 +430,3 @@ function escapeHtml(text) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
-

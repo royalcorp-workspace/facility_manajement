@@ -76,18 +76,24 @@ def test_dashboard_kiosk_mode():
 
     # 6. Test Core API Endpoints
     print("\n[5/5] Testing Core Web API Endpoints (/api/cameras, /api/status/cam_01)...")
-    resp_cams = client.get("/api/cameras")
+    # 5a. Akses tanpa API key wajib 401
+    resp_unauth = client.get("/api/cameras")
+    assert resp_unauth.status_code == 401, f"Expected 401 unauthenticated, got {resp_unauth.status_code}"
+
+    # 5b. Akses terautentikasi (header / query param)
+    api_key = "facility-royal-2026"
+    resp_cams = client.get("/api/cameras", headers={"X-API-Key": api_key})
     assert resp_cams.status_code == 200
     assert isinstance(resp_cams.json(), list)
 
-    resp_status = client.get("/api/status/cam_01")
+    resp_status = client.get(f"/api/status/cam_01?api_key={api_key}")
     assert resp_status.status_code == 200
     assert resp_status.json().get("camera_id") == "cam_01"
-    print("  ✓ API endpoints returned HTTP 200 successfully.")
+    print("  [PASS] API endpoints protected with API Key (401 unauthenticated, 200 authenticated).")
 
 
     print("\n==================================================================")
-    print("  ALL WEB DASHBOARD 100VH KIOSK TESTS PASSED! ✓")
+    print("  ALL WEB DASHBOARD 100VH KIOSK TESTS PASSED! [OK]")
     print("==================================================================")
 
 

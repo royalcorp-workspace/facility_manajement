@@ -24,7 +24,7 @@ COCO_CLASSES = [
 class YOLO11nDetector(DetectorBase):
     def __init__(
         self,
-        confidence_threshold: float = 0.45,
+        confidence_threshold: float = 0.25,
         iou_threshold: float = 0.45,
         target_classes: Optional[list[str]] = None,
         model_path: Optional[str | Path] = None,
