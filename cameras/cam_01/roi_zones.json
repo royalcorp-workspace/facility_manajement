@@ -1,0 +1,411 @@
+{
+  "schema_version": "1.0",
+  "camera_id": "cam_01",
+  "polygons": [
+    {
+      "zone_id": "zone_01",
+      "label": "Slot 1",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#00FF78",
+      "points": [
+        {
+          "x": 100,
+          "y": 559
+        },
+        {
+          "x": 241,
+          "y": 571
+        },
+        {
+          "x": 355,
+          "y": 442
+        },
+        {
+          "x": 238,
+          "y": 443
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 10,
+      "target_classes": [
+        "car",
+        "truck",
+        "bus"
+      ]
+    },
+    {
+      "zone_id": "zone_02",
+      "label": "Slot 2",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#00FF78",
+      "points": [
+        {
+          "x": 248,
+          "y": 572
+        },
+        {
+          "x": 443,
+          "y": 582
+        },
+        {
+          "x": 486,
+          "y": 447
+        },
+        {
+          "x": 367,
+          "y": 444
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 10,
+      "target_classes": [
+        "car",
+        "truck",
+        "bus"
+      ]
+    },
+    {
+      "zone_id": "zone_03",
+      "label": "Slot 3",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#00FF78",
+      "points": [
+        {
+          "x": 460,
+          "y": 588
+        },
+        {
+          "x": 698,
+          "y": 602
+        },
+        {
+          "x": 670,
+          "y": 455
+        },
+        {
+          "x": 496,
+          "y": 451
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 10,
+      "target_classes": [
+        "car",
+        "truck",
+        "bus"
+      ]
+    },
+    {
+      "zone_id": "zone_04",
+      "label": "Slot 4",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#00FF78",
+      "points": [
+        {
+          "x": 682,
+          "y": 455
+        },
+        {
+          "x": 713,
+          "y": 602
+        },
+        {
+          "x": 980,
+          "y": 618
+        },
+        {
+          "x": 866,
+          "y": 465
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 10,
+      "target_classes": [
+        "car",
+        "truck",
+        "bus"
+      ]
+    },
+    {
+      "zone_id": "zone_05",
+      "label": "Slot 5",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#00FF78",
+      "points": [
+        {
+          "x": 995,
+          "y": 616
+        },
+        {
+          "x": 1253,
+          "y": 627
+        },
+        {
+          "x": 1050,
+          "y": 464
+        },
+        {
+          "x": 880,
+          "y": 461
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 10,
+      "target_classes": [
+        "car",
+        "truck",
+        "bus"
+      ]
+    },
+    {
+      "zone_id": "zone_06",
+      "label": "Slot 6",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#00FF78",
+      "points": [
+        {
+          "x": 1270,
+          "y": 625
+        },
+        {
+          "x": 1494,
+          "y": 631
+        },
+        {
+          "x": 1249,
+          "y": 473
+        },
+        {
+          "x": 1079,
+          "y": 469
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 10,
+      "target_classes": [
+        "car",
+        "truck",
+        "bus"
+      ]
+    },
+    {
+      "zone_id": "zone_07",
+      "label": "Slot 7",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#00FF78",
+      "points": [
+        {
+          "x": 1507,
+          "y": 632
+        },
+        {
+          "x": 1691,
+          "y": 641
+        },
+        {
+          "x": 1429,
+          "y": 489
+        },
+        {
+          "x": 1320,
+          "y": 500
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 10,
+      "target_classes": [
+        "car",
+        "truck",
+        "bus"
+      ]
+    }
+  ],
+  "tripwires": [
+    {
+      "tripwire_id": "tw_01",
+      "label": "Tripwire 1",
+      "active": true,
+      "color_hex": "#FFA500",
+      "p1": {
+        "x": 92,
+        "y": 565
+      },
+      "p2": {
+        "x": 235,
+        "y": 580
+      },
+      "direction": "A_TO_B",
+      "target_classes": [
+        "person",
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "debounce_sec": 3.0
+    },
+    {
+      "tripwire_id": "tw_02",
+      "label": "Tripwire 2",
+      "active": true,
+      "color_hex": "#FFA500",
+      "p1": {
+        "x": 245,
+        "y": 581
+      },
+      "p2": {
+        "x": 437,
+        "y": 595
+      },
+      "direction": "A_TO_B",
+      "target_classes": [
+        "person",
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "debounce_sec": 3.0
+    },
+    {
+      "tripwire_id": "tw_03",
+      "label": "Tripwire 3",
+      "active": true,
+      "color_hex": "#FFA500",
+      "p1": {
+        "x": 458,
+        "y": 599
+      },
+      "p2": {
+        "x": 704,
+        "y": 612
+      },
+      "direction": "A_TO_B",
+      "target_classes": [
+        "person",
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "debounce_sec": 3.0
+    },
+    {
+      "tripwire_id": "tw_04",
+      "label": "Tripwire 4",
+      "active": true,
+      "color_hex": "#FFA500",
+      "p1": {
+        "x": 719,
+        "y": 614
+      },
+      "p2": {
+        "x": 984,
+        "y": 627
+      },
+      "direction": "A_TO_B",
+      "target_classes": [
+        "person",
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "debounce_sec": 3.0
+    },
+    {
+      "tripwire_id": "tw_05",
+      "label": "Tripwire 5",
+      "active": true,
+      "color_hex": "#FFA500",
+      "p1": {
+        "x": 1004,
+        "y": 627
+      },
+      "p2": {
+        "x": 1261,
+        "y": 637
+      },
+      "direction": "A_TO_B",
+      "target_classes": [
+        "person",
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "debounce_sec": 3.0
+    },
+    {
+      "tripwire_id": "tw_06",
+      "label": "Tripwire 6",
+      "active": true,
+      "color_hex": "#FFA500",
+      "p1": {
+        "x": 1279,
+        "y": 638
+      },
+      "p2": {
+        "x": 1511,
+        "y": 645
+      },
+      "direction": "A_TO_B",
+      "target_classes": [
+        "person",
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "debounce_sec": 3.0
+    },
+    {
+      "tripwire_id": "tw_07",
+      "label": "Tripwire 7",
+      "active": true,
+      "color_hex": "#FFA500",
+      "p1": {
+        "x": 1522,
+        "y": 642
+      },
+      "p2": {
+        "x": 1698,
+        "y": 650
+      },
+      "direction": "A_TO_B",
+      "target_classes": [
+        "person",
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "debounce_sec": 3.0
+    }
+  ],
+  "barriers": [],
+  "exclusion_masks": [],
+  "safe_walkways": [],
+  "density_rules": []
+}

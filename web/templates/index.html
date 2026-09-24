@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Facility Management — Live Surveillance Hub</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+</head>
+<body>
+
+  <!-- 1. Top Navbar Ringkas (~44px) -->
+  <header class="header">
+    <div class="brand">
+      <div class="brand-icon">FM</div>
+      <span class="brand-title">Facility Management</span>
+    </div>
+
+    <div class="header-center">
+      <div class="video-controls">
+        <label for="camera-switcher" class="switcher-label">Kamera:</label>
+        <select id="camera-switcher" class="camera-select">
+          {% for cam in cameras %}
+          <option value="{{ cam.camera_id }}">{{ cam.display_name }} ({{ cam.camera_id }})</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="header-status">
+      <div class="status-pill">
+        <span class="pulse-dot"></span>
+        <span class="status-text">AI Online</span>
+      </div>
+      <div class="clock-display" id="facility-clock">--:--:-- WIB</div>
+    </div>
+  </header>
+
+  <!-- 2. Main Viewport Kontainer (Fullscreen Kiosk, Zero Scrollbar) -->
+  <main class="main-viewport">
+    <div class="stream-container">
+      {% set default_cam = cameras[0].camera_id if cameras else 'cam_01' %}
+      <img 
+        id="stream-feed" 
+        src="/video_feed/{{ default_cam }}" 
+        alt="Live Stream Feed {{ default_cam }}" 
+        class="stream-feed"
+      >
+      <div class="camera-hud">
+        <span class="hud-badge" id="hud-camera-id">{{ default_cam.upper() }}</span>
+        <span class="hud-badge hud-status" id="hud-status">LIVE</span>
+        <span class="hud-badge hud-frames" id="hud-frames">Frames: 0</span>
+        <span class="hud-badge hud-motion" id="hud-motion">Motion: 0</span>
+      </div>
+    </div>
+  </main>
+
+  <!-- 
+  ========================================================================
+  [KOMPONEN KPI & TABEL DISIMPAN DALAM STATUS KOMENTAR / STANDBY]
+  ========================================================================
+  <section class="kpi-grid">
+    <div class="kpi-card"><span class="kpi-label">Kamera Aktif</span><span class="kpi-value" id="kpi-active-cameras">-</span></div>
+    <div class="kpi-card"><span class="kpi-label">Total Frame</span><span class="kpi-value" id="kpi-total-frames">-</span></div>
+    <div class="kpi-card"><span class="kpi-label">Insiden</span><span class="kpi-value" id="kpi-total-incidents">-</span></div>
+    <div class="kpi-card"><span class="kpi-label">Resolusi</span><span class="kpi-value">640x360</span></div>
+  </section>
+  <section class="incident-section">
+    <table class="incident-table"><tbody id="incident-table-body"></tbody></table>
+  </section>
+  ========================================================================
+  -->
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

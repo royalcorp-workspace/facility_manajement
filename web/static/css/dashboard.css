@@ -1,0 +1,255 @@
+/**
+ * Facility Management — Pure Video Stream Focus (100vh Single-Page Kiosk)
+ * 100% Clean Light Mode (Slate Design System)
+ * Zero Scrollbar Viewport Lock
+ */
+
+/* ── 1. Viewport Lock & Base Reset ──────────────────────────── */
+:root {
+  --bg-app: #f8fafc;               /* Slate 50 bersih */
+  --bg-surface: #ffffff;           /* Putih murni */
+  --bg-viewport: #000000;          /* Hitam netral viewport kamera */
+  --border-subtle: #e2e8f0;        /* Slate 200 garis batas ultra-halus */
+  --border-strong: #cbd5e1;        /* Slate 300 input & button border */
+  --border-focus: #3b82f6;         /* Blue 500 ring fokus */
+  --text-main: #0f172a;            /* Slate 900 teks utama kontras tinggi */
+  --text-muted: #64748b;           /* Slate 500 label, meta, timestamp */
+  --emerald-main: #059669;
+  --emerald-bg: #ecfdf5;
+  --emerald-border: #a7f3d0;
+  --blue-main: #2563eb;
+  --blue-bg: #eff6ff;
+  --blue-border: #bfdbfe;
+  --navbar-height: 44px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100vh;
+  max-height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background-color: var(--bg-app);
+  font-family: var(--font-sans);
+  display: flex;
+  flex-direction: column;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── 2. Top Navbar Ringkas (~44px) ──────────────────────────── */
+.header {
+  height: var(--navbar-height);
+  min-height: var(--navbar-height);
+  max-height: var(--navbar-height);
+  background-color: var(--bg-surface);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  z-index: 50;
+  box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.04);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--blue-main), #1d4ed8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  color: #ffffff;
+  font-size: 12px;
+  letter-spacing: -0.02em;
+}
+
+.brand-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-main);
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.header-center {
+  display: flex;
+  align-items: center;
+}
+
+.video-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.switcher-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.camera-select {
+  background-color: var(--bg-surface);
+  color: var(--text-main);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+  height: 28px;
+  box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.04);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.camera-select:focus {
+  border-color: var(--blue-main);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.header-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.status-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 8px;
+  background-color: var(--emerald-bg);
+  color: var(--emerald-main);
+  border: 1px solid var(--emerald-border);
+  border-radius: 9999px;
+  white-space: nowrap;
+}
+
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: var(--emerald-main);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(5, 150, 105, 0.7); }
+  70% { transform: scale(1); box-shadow: 0 0 0 5px rgba(5, 150, 105, 0); }
+  100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(5, 150, 105, 0); }
+}
+
+.clock-display {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  background-color: var(--bg-app);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+/* ── 3. Main Viewport Kontainer (Fullscreen Kiosk) ──────────── */
+.main-viewport {
+  flex: 1;
+  height: calc(100vh - var(--navbar-height));
+  width: 100vw;
+  background-color: var(--bg-viewport);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+
+.stream-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  background-color: var(--bg-viewport);
+}
+
+.stream-feed {
+  width: 100%;
+  height: 100%;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* ── 4. Floating HUD Overlay on Video ───────────────────────── */
+.camera-hud {
+  position: absolute;
+  bottom: 16px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.hud-badge {
+  background-color: rgba(15, 23, 42, 0.80);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  letter-spacing: 0.03em;
+  font-family: var(--font-mono);
+}
+
+/* ── 5. Responsive Adjustments ──────────────────────────────── */
+@media (max-width: 768px) {
+  .header {
+    padding: 0 10px;
+  }
+  .brand-title {
+    font-size: 13px;
+  }
+  .clock-display {
+    display: none;
+  }
+  .camera-hud {
+    bottom: 10px;
+    left: 10px;
+    gap: 6px;
+  }
+  .hud-badge {
+    padding: 3px 6px;
+    font-size: 10px;
+  }
+}

@@ -1,0 +1,74 @@
+# ── Environment & Secrets ───────────────────────────────────────────────────
+.env
+.env.*
+.env.local
+!.env.example
+
+# ── Python & Virtual Environments ──────────────────────────────────────────
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# ── Databases & Runtime Logs ───────────────────────────────────────────────
+storage/*.db
+storage/*.db-wal
+storage/*.db-shm
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+logs/*.log
+*.log
+!logs/.gitkeep
+
+# ── Snapshots & Media Captures ─────────────────────────────────────────────
+cameras/**/snapshots/*
+!cameras/**/snapshots/.gitkeep
+storage/snapshots/*
+!storage/snapshots/.gitkeep
+storage/clips/*
+!storage/clips/.gitkeep
+*.mp4
+*.avi
+*.jpg
+*.jpeg
+*.png
+*.webp
+
+# ── Large AI Models & Weights ──────────────────────────────────────────────
+models/*.onnx
+models/*.pt
+models/*.bin
+models/*.xml
+weights/*.onnx
+weights/*.pt
+weights/*.bin
+*.onnx
+*.pt
+*.bin
+*.tflite
+*.engine
+yolo11n_openvino_model/
+!weights/.gitkeep
+
+# ── Temporary & Scratch Files ──────────────────────────────────────────────
+scratch/
+temp/
+tmp/
+*.bak
+*.tmp
+
+# ── IDE & OS Artifacts ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo

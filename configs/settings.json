@@ -1,0 +1,68 @@
+{
+  "_comment": "Global settings Facility Management — nilai sensitif HARUS via .env",
+  "app": {
+    "name": "Facility Management",
+    "version": "0.4.0",
+    "env": "${APP_ENV}",
+    "log_level": "${LOG_LEVEL}"
+  },
+  "disk_guard": {
+    "enabled": true,
+    "poll_interval_sec": 60,
+    "threshold_gb": "${DISK_GUARD_THRESHOLD_GB}",
+    "threshold_pct": "${DISK_GUARD_THRESHOLD_PCT}",
+    "purge_oldest_pct": 20
+  },
+  "capture": {
+    "global_reconnect_delay_sec": 3.0,
+    "global_frame_timeout_sec": 8.0,
+    "global_max_reconnect_attempts": 10,
+    "keyframe_warmup_frames": 5
+  },
+  "storage": {
+    "db_path": "storage/facility.db",
+    "wal_mode": true,
+    "synchronous": "NORMAL"
+  },
+  "motion_gate": {
+    "pixel_threshold": 25,
+    "min_changed_pixels_pct": 0.005,
+    "heartbeat_interval_sec": 2.0
+  },
+  "ai": {
+    "inference_size": [640, 360],
+    "confidence_threshold": 0.45,
+    "iou_threshold": 0.45,
+    "model_path": "weights/yolo11n.onnx",
+    "target_classes": ["person", "car", "motorcycle", "bus", "truck", "backpack", "handbag"]
+  },
+  "tracker": {
+    "max_disappeared_frames": 30,
+    "max_distance_px": 60.0,
+    "anchor_radius_px": 15.0,
+    "enter_min_frames": 3,
+    "spatial_memory_ttl_sec": 3.0
+  },
+  "events": {
+    "snapshot_quality": 85
+  },
+  "web": {
+    "host": "0.0.0.0",
+    "port": 8070,
+    "live_jpeg_quality": 75
+  },
+  "alert": {
+    "cooldown_sec": 5.0,
+    "queue_maxsize": 30,
+    "enable_audio": true
+  },
+  "concurrency": {
+    "max_concurrent_ai_inferences": 1
+  },
+  "logging": {
+    "file": "logs/app.log",
+    "max_bytes": 5242880,
+    "backup_count": 3,
+    "console_color": true
+  }
+}

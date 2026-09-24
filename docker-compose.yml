@@ -1,0 +1,29 @@
+services:
+  facility-vision:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: facility-vision-hub
+    restart: unless-stopped
+    ports:
+      - "8070:8070"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - WEB_HOST=0.0.0.0
+      - WEB_PORT=8070
+    env_file:
+      - .env
+    volumes:
+      - ./storage:/app/storage
+      - ./logs:/app/logs
+      - ./cameras:/app/cameras
+      - ./configs:/app/configs
+      - ./weights:/app/weights
+      - ./engine:/app/engine
+      - ./web:/app/web
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8070/api/cameras || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

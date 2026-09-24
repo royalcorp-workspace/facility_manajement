@@ -1,0 +1,5 @@
+/**
+ * Facility Management — Style Forwarder to dashboard.css
+ * Menjamin kompatibilitas mundur jika browser atau rute lawas merujuk ke style.css
+ */
+@import url("dashboard.css");
