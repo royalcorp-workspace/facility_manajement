@@ -14,7 +14,7 @@ from fastapi.templating import Jinja2Templates
 from engine.config_loader import CameraConfig
 from engine.logger import get_logger
 from storage.database import get_reader_conn
-from web.buffer import MultiCameraBuffer
+from web.buffer import MultiCameraBuffer, generate_fallback_canvas
 
 logger = get_logger(__name__)
 
@@ -75,6 +75,7 @@ def create_app(
 
         async def mjpeg_generator():
             last_seq = -1
+            consecutive_idle_cycles = 0
             try:
                 while True:
                     # Ambil frame via run_in_executor untuk mencegah blocking event loop
@@ -85,14 +86,32 @@ def create_app(
                         timeout=0.5,
                     )
 
-                    if frame is None:
+                    if frame is None or frame.sequence_id == last_seq:
+                        consecutive_idle_cycles += 1
+                        # Jika kamera reconnecting / putus >= 2 detik (4 siklus x 0.5s), sajikan fallback canvas informatif
+                        if consecutive_idle_cycles >= 4:
+                            consecutive_idle_cycles = 0
+                            cfg_cam = cam_map.get(camera_id)
+                            w = cfg_cam.resolution.ai_width if cfg_cam else 640
+                            h = cfg_cam.resolution.ai_height if cfg_cam else 360
+                            fallback_bytes = generate_fallback_canvas(
+                                camera_id=camera_id,
+                                message="CONNECTING / RECONNECTING...",
+                                width=w,
+                                height=h,
+                            )
+                            header = (
+                                b"--frame\r\n"
+                                b"Content-Type: image/jpeg\r\n"
+                                b"Content-Length: " + str(len(fallback_bytes)).encode() + b"\r\n\r\n"
+                            )
+                            yield header + fallback_bytes + b"\r\n"
+
                         await asyncio.sleep(0.02)
                         continue
 
-                    if frame.sequence_id == last_seq:
-                        await asyncio.sleep(0.01)
-                        continue
-
+                    # Frame aktif valid diterima
+                    consecutive_idle_cycles = 0
                     last_seq = frame.sequence_id
                     header = (
                         b"--frame\r\n"
@@ -124,33 +143,55 @@ def create_app(
         processed = orchestrator.processed_count if orchestrator else 0
         motion = orchestrator.motion_detected_count if orchestrator else 0
         status_val = "active" if (orchestrator and orchestrator.is_alive()) else "inactive"
+        fps_val = round(orchestrator.fps, 1) if (orchestrator and hasattr(orchestrator, "fps")) else 0.0
+        active_tracks_count = len(orchestrator.tracker.tracks) if (orchestrator and hasattr(orchestrator, "tracker") and hasattr(orchestrator.tracker, "tracks")) else 0
 
         parking_info = None
         if orchestrator and hasattr(orchestrator, "parking_tracker"):
             pt = orchestrator.parking_tracker
-            occ = sum(1 for s in pt.slot_states.values() if s.occupied)
-            avail = max(0, pt.total_slots - occ)
-            parking_info = {
-                "total_slots": pt.total_slots,
-                "occupied_slots": occ,
-                "available_slots": avail,
-                "gate_in": pt.gate_in_count,
-                "gate_out": pt.gate_out_count,
-                "slots": {
-                    s_id: {
-                        "phase": s.phase,
-                        "occupied": s.occupied,
-                        "track_id": s.track_id,
-                        "dwell": round(s.dwell_duration, 1),
-                    }
-                    for s_id, s in pt.slot_states.items()
-                },
-            }
+            is_block = getattr(pt, "parking_mode", "slot") == "motorcycle_block"
+            if is_block:
+                occ = getattr(pt, "occupied_slots", 0)
+                if hasattr(pt, "_last_stable_occupied") and pt._last_stable_occupied is not None:
+                    occ = pt._last_stable_occupied
+                avail = max(0, pt.total_slots - occ)
+                parking_info = {
+                    "parking_mode": "motorcycle_block",
+                    "total_slots": pt.total_slots,
+                    "occupied_slots": occ,
+                    "available_slots": avail,
+                    "gate_in": pt.gate_in_count,
+                    "gate_out": pt.gate_out_count,
+                    "stationary_units_count": len(getattr(pt, "_stationary_motor_units", {})),
+                    "slots": {},
+                }
+            else:
+                occ = sum(1 for s in pt.slot_states.values() if s.occupied)
+                avail = max(0, pt.total_slots - occ)
+                parking_info = {
+                    "parking_mode": "slot",
+                    "total_slots": pt.total_slots,
+                    "occupied_slots": occ,
+                    "available_slots": avail,
+                    "gate_in": pt.gate_in_count,
+                    "gate_out": pt.gate_out_count,
+                    "slots": {
+                        s_id: {
+                            "phase": s.phase,
+                            "occupied": s.occupied,
+                            "track_id": s.track_id,
+                            "dwell": round(s.dwell_duration, 1),
+                        }
+                        for s_id, s in pt.slot_states.items()
+                    },
+                }
 
         return {
             "camera_id": camera_id,
             "display_name": cfg.display_name,
             "status": status_val,
+            "fps": fps_val,
+            "active_tracks": active_tracks_count,
             "processed_count": processed,
             "motion_detected_count": motion,
             "resolution": f"{cfg.resolution.capture_width}x{cfg.resolution.capture_height} -> {cfg.resolution.ai_width}x{cfg.resolution.ai_height}",
@@ -166,24 +207,46 @@ def create_app(
             processed = orchestrator.processed_count if orchestrator else 0
             motion = orchestrator.motion_detected_count if orchestrator else 0
             status_val = "active" if (orchestrator and orchestrator.is_alive()) else "inactive"
+            fps_val = round(orchestrator.fps, 1) if (orchestrator and hasattr(orchestrator, "fps")) else 0.0
+            active_tracks_count = len(orchestrator.tracker.tracks) if (orchestrator and hasattr(orchestrator, "tracker") and hasattr(orchestrator.tracker, "tracks")) else 0
 
             parking_info = None
             if orchestrator and hasattr(orchestrator, "parking_tracker"):
                 pt = orchestrator.parking_tracker
-                occ = sum(1 for s in pt.slot_states.values() if s.occupied)
-                avail = max(0, pt.total_slots - occ)
-                parking_info = {
-                    "total_slots": pt.total_slots,
-                    "occupied_slots": occ,
-                    "available_slots": avail,
-                    "gate_in": pt.gate_in_count,
-                    "gate_out": pt.gate_out_count,
-                }
+                is_block = getattr(pt, "parking_mode", "slot") == "motorcycle_block"
+                if is_block:
+                    occ = getattr(pt, "occupied_slots", 0)
+                    if hasattr(pt, "_last_stable_occupied") and pt._last_stable_occupied is not None:
+                        occ = pt._last_stable_occupied
+                    avail = max(0, pt.total_slots - occ)
+                    parking_info = {
+                        "parking_mode": "motorcycle_block",
+                        "total_slots": pt.total_slots,
+                        "occupied_slots": occ,
+                        "available_slots": avail,
+                        "gate_in": pt.gate_in_count,
+                        "gate_out": pt.gate_out_count,
+                        "stationary_units_count": len(getattr(pt, "_stationary_motor_units", {})),
+                        "slots": {},
+                    }
+                else:
+                    occ = sum(1 for s in pt.slot_states.values() if s.occupied)
+                    avail = max(0, pt.total_slots - occ)
+                    parking_info = {
+                        "parking_mode": "slot",
+                        "total_slots": pt.total_slots,
+                        "occupied_slots": occ,
+                        "available_slots": avail,
+                        "gate_in": pt.gate_in_count,
+                        "gate_out": pt.gate_out_count,
+                    }
 
             result.append({
                 "camera_id": cfg.camera_id,
                 "display_name": cfg.display_name,
                 "status": status_val,
+                "fps": fps_val,
+                "active_tracks": active_tracks_count,
                 "processed_count": processed,
                 "motion_detected_count": motion,
                 "resolution": f"{cfg.resolution.capture_width}x{cfg.resolution.capture_height} -> {cfg.resolution.ai_width}x{cfg.resolution.ai_height}",
@@ -192,9 +255,18 @@ def create_app(
         return result
 
     @app.get("/api/zones", dependencies=[Depends(verify_api_key)])
-    async def get_all_zones():
-        """Dapatkan seluruh definisi zona ROI (poligon & tripwire) untuk seluruh kamera."""
+    async def get_all_zones(cam: Optional[str] = None):
+        """Dapatkan seluruh definisi zona ROI (poligon & tripwire) untuk seluruh kamera atau spesifik via ?cam=."""
         import json
+        if cam:
+            roi_path = Path(f"cameras/{cam}/roi_zones.json")
+            if not roi_path.exists():
+                raise HTTPException(status_code=404, detail=f"Zona untuk kamera '{cam}' tidak ditemukan")
+            try:
+                return json.loads(roi_path.read_text(encoding="utf-8"))
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Gagal membaca konfigurasi zona: {e}")
+
         result = {}
         for cfg in camera_configs:
             roi_path = Path(f"cameras/{cfg.camera_id}/roi_zones.json")

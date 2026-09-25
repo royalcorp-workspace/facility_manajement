@@ -246,6 +246,18 @@ class SmartParkingTracker:
             return self._total_slots_override
         return len(self.slot_states)
 
+    @property
+    def occupied_slots(self) -> int:
+        """Jumlah slot terisi (kompatibel untuk slot mobil maupun motorcycle block)."""
+        if self.parking_mode == "motorcycle_block":
+            return self._last_stable_occupied if self._last_stable_occupied is not None else 0
+        return sum(1 for s in self.slot_states.values() if s.occupied)
+
+    @property
+    def available_slots(self) -> int:
+        """Jumlah slot tersedia."""
+        return max(0, self.total_slots - self.occupied_slots)
+
     def apply_tripwire_signal(
         self,
         slot_id: str,
@@ -373,6 +385,7 @@ class SmartParkingTracker:
         return False
 
     def _block_stats(self, occupied: int) -> Dict[str, Any]:
+        self._last_stable_occupied = occupied
         available = max(0, self.block_capacity - occupied)
         return {
             "total_slots": self.block_capacity,

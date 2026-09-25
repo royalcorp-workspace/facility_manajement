@@ -167,6 +167,9 @@ def main() -> None:
     from notification import set_global_dispatcher
 
     frame_buffer = MultiCameraBuffer()
+    for cam_c in camera_configs:
+        frame_buffer.register_camera(cam_c.camera_id)
+    logger.debug(f"[MultiCameraBuffer] Auto-discovery mendaftarkan {len(camera_configs)} kamera ke live buffer ✓")
 
     alert_dispatcher = AlertDispatcher(
         queue_maxsize=queue_maxsize,
