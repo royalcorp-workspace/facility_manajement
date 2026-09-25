@@ -1,0 +1,29 @@
+{
+  "camera_id": "cam_03",
+  "display_name": "Kamera 03 (Area Motor 2 - 174)",
+  "rtsp_url": "rtsp://${CAM_03_USER}:${CAM_03_PASS}@${CAM_03_HOST}:${CAM_03_PORT}${CAM_03_PATH}",
+  "resolution": {
+    "capture_width": 1920,
+    "capture_height": 1080,
+    "ai_width": 640,
+    "ai_height": 360
+  },
+  "capture": {
+    "queue_maxsize": 1,
+    "reconnect_delay_sec": 3.0,
+    "max_reconnect_attempts": 10,
+    "frame_timeout_sec": 8.0,
+    "keyframe_warmup_frames": 5
+  },
+  "disk_guard": {
+    "snapshot_dir": "cameras/cam_03/snapshots",
+    "max_size_gb": 2.0,
+    "purge_oldest_pct": 20.0
+  },
+  "enabled_classes": [
+    "motorcycle",
+    "bicycle"
+  ],
+  "parking_mode": "motorcycle_block",
+  "block_capacity": 30
+}

@@ -76,17 +76,31 @@ class CameraOrchestrator(threading.Thread):
         self._stop_event = threading.Event()
         self.processed_count: int = 0
         self.motion_detected_count: int = 0
-        self.initial_warmup_frames: int = initial_warmup_frames
         self.last_motion_detected_time: float = 0.0
-        self._quiescent_scan_interval: float = quiescent_scan_interval
         self.fps: float = 20.0
         self._last_fps_time: float = 0.0
         self._fps_frame_count: int = 0
 
-        # Smart Parking Tracker (Kapasitas Dinamis Berdasarkan Poligon Aktif)
+        # Smart Parking Tracker (Kapasitas Dinamis Berdasarkan Poligon Aktif / Block Mode)
+        parking_classes = set(self.camera_config.enabled_classes) if (getattr(self.camera_config, "enabled_classes", None)) else {"car", "truck", "bus"}
+        _parking_mode = getattr(self.camera_config, "parking_mode", "slot") or "slot"
+        _block_capacity = int(getattr(self.camera_config, "block_capacity", 30) or 30)
+        _is_block = _parking_mode == "motorcycle_block"
+        _stationary_dwell = 0.0 if _is_block else 5.0
+
+        # Quiescent Baseline Scan & Warmup: objek diam permanen di area motor dipindai berkala 3.0s
+        self.initial_warmup_frames: int = 50 if _is_block else initial_warmup_frames
+        self._quiescent_scan_interval: float = 3.0 if _is_block else quiescent_scan_interval
+
         self.parking_tracker = parking_tracker or SmartParkingTracker(
             dwell_threshold_sec=10.0,
-            vehicle_classes={"car", "truck", "bus"},
+            vehicle_classes=parking_classes,
+            parking_mode=_parking_mode,
+            block_capacity=_block_capacity,
+            stationary_dwell_sec=_stationary_dwell,
+            # Exclusion zone drum biru cam_03: motor di x < 720 (1080p) dikecualikan dari kuota.
+            # Hanya aktif untuk motorcycle_block — poligon ROI JSON tidak diubah.
+            block_exclusion_x_1080p=720 if _is_block else None,
         )
 
         # Inisialisasi komponen default jika tidak di-inject
@@ -96,19 +110,23 @@ class CameraOrchestrator(threading.Thread):
             heartbeat_interval_sec=self._quiescent_scan_interval,
         )
 
+        detector_classes = self.camera_config.enabled_classes if (getattr(self.camera_config, "enabled_classes", None)) else ["person", "car", "motorcycle", "bus", "truck", "backpack", "handbag"]
+        det_conf = 0.15 if _is_block else 0.20
+        det_iou = 0.48 if _is_block else 0.45
         self.detector = detector or YOLO11nDetector(
-            confidence_threshold=0.25,
-            iou_threshold=0.45,
-            target_classes=["person", "car", "motorcycle", "bus", "truck", "backpack", "handbag"],
+            confidence_threshold=det_conf,
+            iou_threshold=det_iou,
+            target_classes=detector_classes,
             model_path="weights/yolo11n.onnx",
         )
 
+        _enter_min = 1 if _is_block else 3
         self.tracker = tracker or CentroidTracker(
-            max_disappeared_frames=30,
+            max_disappeared_frames=60,
             max_distance_px=60.0,
-            anchor_radius_px=15.0,
-            enter_min_frames=3,
-            spatial_memory_ttl_sec=3.0,
+            anchor_radius_px=25.0,
+            enter_min_frames=_enter_min,
+            spatial_memory_ttl_sec=8.0,
         )
 
         self.event_dispatcher = event_dispatcher or EventDispatcher(
@@ -308,12 +326,14 @@ class CameraOrchestrator(threading.Thread):
                                 notes_up = str(ev.notes).upper()
                                 if "B_TO_A" in notes_up or "B TO A" in notes_up or "OUT" in notes_up:
                                     direction = "B_TO_A"
-                            self.parking_tracker.apply_tripwire_signal(
-                                slot_id=paired_slot_id,
-                                direction=direction,
-                                track_id=ev.track_id or -1,
-                                current_time=processed_frame.timestamp,
-                            )
+                            valid_zone_ids = {z.zone_id for z in self.roi_config.polygons}
+                            if paired_slot_id in valid_zone_ids:
+                                self.parking_tracker.apply_tripwire_signal(
+                                    slot_id=paired_slot_id,
+                                    direction=direction,
+                                    track_id=ev.track_id or -1,
+                                    current_time=processed_frame.timestamp,
+                                )
                             self.parking_tracker.record_gate_crossing(
                                 ev.notes or "",
                                 tripwire_id=tw_id,

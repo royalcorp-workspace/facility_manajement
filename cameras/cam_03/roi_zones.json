@@ -1,0 +1,76 @@
+{
+  "schema_version": "1.0",
+  "camera_id": "cam_03",
+  "pipeline_type": "motorcycle_block",
+  "block_capacity": 30,
+  "polygons": [
+    {
+      "zone_id": "zone_01",
+      "label": "Zone 1",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#78FF00",
+      "points": [
+        {
+          "x": 1839,
+          "y": 885
+        },
+        {
+          "x": 1341,
+          "y": 508
+        },
+        {
+          "x": 342,
+          "y": 574
+        },
+        {
+          "x": 354,
+          "y": 822
+        },
+        {
+          "x": 394,
+          "y": 1074
+        },
+        {
+          "x": 1734,
+          "y": 1070
+        },
+        {
+          "x": 1809,
+          "y": 963
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 3,
+      "target_classes": null
+    }
+  ],
+  "tripwires": [
+    {
+      "tripwire_id": "tw_01",
+      "label": "Tripwire 1",
+      "active": true,
+      "color_hex": "#FFD700",
+      "p1": {
+        "x": 1007,
+        "y": 412
+      },
+      "p2": {
+        "x": 1183,
+        "y": 509
+      },
+      "direction": "BOTH",
+      "target_classes": [
+        "motorcycle",
+        "bicycle"
+      ],
+      "debounce_sec": 3.0
+    }
+  ],
+  "barriers": [],
+  "exclusion_masks": [],
+  "safe_walkways": [],
+  "density_rules": []
+}
