@@ -51,6 +51,9 @@ class CameraConfig(BaseModel):
     resolution: ResolutionConfig = Field(default_factory=ResolutionConfig)
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     disk_guard: DiskGuardCameraConfig
+    enabled_classes: Optional[List[str]] = Field(default=None, description="Filter kelas objek khusus kamera ini")
+    parking_mode: Optional[str] = Field(default="slot", description="Mode parkir: 'slot' atau 'motorcycle_block'")
+    block_capacity: Optional[int] = Field(default=30, ge=1, description="Kapasitas maksimum unit motor untuk block parking")
 
     class Config:
         json_schema_extra = {"sensitive_fields": ["rtsp_url"]}
@@ -159,6 +162,8 @@ class ROIZonesConfig(BaseModel):
 
     schema_version: str = Field(..., pattern=r"^\d+\.\d+$")
     camera_id: str = Field(..., min_length=1)
+    pipeline_type: Optional[str] = Field(default=None, description="Tipe pipeline spesifik kamera")
+    block_capacity: Optional[int] = Field(default=None, description="Kapasitas maksimum unit pada area blok")
     polygons: List[ROIZone] = Field(default_factory=list)
     tripwires: List[TripwireRule] = Field(default_factory=list)
     barriers: List[BarrierRule] = Field(default_factory=list)

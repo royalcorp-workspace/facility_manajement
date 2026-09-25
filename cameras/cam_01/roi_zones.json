@@ -78,7 +78,7 @@
       "color_hex": "#00FF78",
       "points": [
         {
-          "x": 460,
+          "x": 445,
           "y": 588
         },
         {
@@ -90,7 +90,7 @@
           "y": 455
         },
         {
-          "x": 496,
+          "x": 486,
           "y": 451
         }
       ],
@@ -214,20 +214,54 @@
       "color_hex": "#00FF78",
       "points": [
         {
-          "x": 1507,
-          "y": 632
-        },
-        {
-          "x": 1691,
+          "x": 1506,
           "y": 641
         },
         {
-          "x": 1429,
+          "x": 1271,
           "y": 489
         },
         {
-          "x": 1320,
-          "y": 500
+          "x": 1438,
+          "y": 492
+        },
+        {
+          "x": 1685,
+          "y": 642
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 10,
+      "target_classes": [
+        "car",
+        "truck",
+        "bus"
+      ]
+    },
+    {
+      "zone_id": "zone_08",
+      "label": "Slot 8",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#00FF78",
+      "points": [
+        {
+          "x": 1702,
+          "y": 644
+        },
+        {
+          "x": 1452,
+          "y": 496
+        },
+        {
+          "x": 1588,
+          "y": 499
+        },
+        {
+          "x": 1852,
+          "y": 645
         }
       ],
       "trigger_on": [
@@ -394,6 +428,29 @@
         "y": 650
       },
       "direction": "A_TO_B",
+      "target_classes": [
+        "person",
+        "car",
+        "motorcycle",
+        "bus",
+        "truck"
+      ],
+      "debounce_sec": 3.0
+    },
+    {
+      "tripwire_id": "tw_16",
+      "label": "Tripwire 16",
+      "active": true,
+      "color_hex": "#FF00FF",
+      "p1": {
+        "x": 1710,
+        "y": 657
+      },
+      "p2": {
+        "x": 1853,
+        "y": 658
+      },
+      "direction": "BOTH",
       "target_classes": [
         "person",
         "car",

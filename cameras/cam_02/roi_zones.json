@@ -1,0 +1,77 @@
+{
+  "schema_version": "1.0",
+  "camera_id": "cam_02",
+  "pipeline_type": null,
+  "block_capacity": null,
+  "polygons": [
+    {
+      "zone_id": "zone_01",
+      "label": "Zone 1",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#78FF00",
+      "points": [
+        {
+          "x": 37,
+          "y": 743
+        },
+        {
+          "x": 72,
+          "y": 1059
+        },
+        {
+          "x": 214,
+          "y": 866
+        },
+        {
+          "x": 1489,
+          "y": 426
+        },
+        {
+          "x": 1306,
+          "y": 369
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 3,
+      "target_classes": null
+    },
+    {
+      "zone_id": "zone_02",
+      "label": "Zone 2",
+      "type": "polygon",
+      "active": true,
+      "color_hex": "#FFD700",
+      "points": [
+        {
+          "x": 821,
+          "y": 322
+        },
+        {
+          "x": 955,
+          "y": 379
+        },
+        {
+          "x": 38,
+          "y": 511
+        },
+        {
+          "x": 62,
+          "y": 399
+        }
+      ],
+      "trigger_on": [
+        "linger"
+      ],
+      "linger_threshold_sec": 3,
+      "target_classes": null
+    }
+  ],
+  "tripwires": [],
+  "barriers": [],
+  "exclusion_masks": [],
+  "safe_walkways": [],
+  "density_rules": []
+}

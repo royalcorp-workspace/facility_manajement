@@ -61,8 +61,24 @@ class YOLO11nDetector(DetectorBase):
             raise RuntimeError("Model belum dimuat. Panggil load_model() terlebih dahulu.")
 
         h_img, w_img = ai_frame.shape[:2]
+
+        # Letterbox square padding (640x640) menjaga aspect ratio asli tanpa distorsi vertikal/horizontal
+        scale = min(640.0 / w_img, 640.0 / h_img)
+        new_w = int(round(w_img * scale))
+        new_h = int(round(h_img * scale))
+        pad_x = (640 - new_w) // 2
+        pad_y = (640 - new_h) // 2
+
+        if new_w != w_img or new_h != h_img:
+            resized = cv2.resize(ai_frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        else:
+            resized = ai_frame
+
+        canvas = np.zeros((640, 640, 3), dtype=np.uint8)
+        canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+
         blob = cv2.dnn.blobFromImage(
-            ai_frame,
+            canvas,
             scalefactor=1.0 / 255.0,
             size=(640, 640),
             swapRB=True,
@@ -85,8 +101,6 @@ class YOLO11nDetector(DetectorBase):
         confidences: list[float] = []
         class_ids: list[int] = []
         class_labels: list[str] = []
-        x_scale = w_img / 640.0
-        y_scale = h_img / 640.0
 
         for row in output:
             scores = row[4:]
@@ -97,8 +111,6 @@ class YOLO11nDetector(DetectorBase):
                 continue
 
             label = COCO_CLASSES[class_id] if class_id < len(COCO_CLASSES) else f"cls_{class_id}"
-            if not self.is_target_class(label):
-                continue
 
             cx, cy, w, h = row[0], row[1], row[2], row[3]
             if cx <= 1.0 and cy <= 1.0:
@@ -107,10 +119,24 @@ class YOLO11nDetector(DetectorBase):
                 w *= 640.0
                 h *= 640.0
 
-            cx *= x_scale
-            cy *= y_scale
-            w *= x_scale
-            h *= y_scale
+            # Kembalikan koordinat proposal dari kanvas letterbox ke koordinat frame asli
+            cx = (cx - pad_x) / scale
+            cy = (cy - pad_y) / scale
+            w = w / scale
+            h = h / scale
+
+            # Semantic Class Remapping:
+            # Di area parkir/fasilitas, mobil hitam ber-roofbox di bawah bayangan atap sering
+            # terdeteksi oleh YOLO sebagai "parking meter" (karena tiang/bayangan + kotak roofbox).
+            # Remap "parking meter" -> "car" jika memiliki dimensi dan aspect ratio kendaraan.
+            if label == "parking meter":
+                aspect_ratio = (w / h) if h > 0 else 0.0
+                if w >= 25.0 and h >= 25.0 and 0.35 <= aspect_ratio <= 2.5:
+                    label = "car"
+                    class_id = 2  # COCO class_id untuk car
+
+            if not self.is_target_class(label):
+                continue
 
             x1 = max(0, int(cx - w / 2))
             y1 = max(0, int(cy - h / 2))

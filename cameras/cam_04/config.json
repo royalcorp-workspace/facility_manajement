@@ -1,0 +1,27 @@
+{
+  "camera_id": "cam_04",
+  "display_name": "Kamera 04 (Area Motor 3 - 134)",
+  "rtsp_url": "rtsp://${CAM_04_USER}:${CAM_04_PASS}@${CAM_04_HOST}:${CAM_04_PORT}${CAM_04_PATH}",
+  "resolution": {
+    "capture_width": 1920,
+    "capture_height": 1080,
+    "ai_width": 640,
+    "ai_height": 360
+  },
+  "capture": {
+    "queue_maxsize": 1,
+    "reconnect_delay_sec": 3.0,
+    "max_reconnect_attempts": 10,
+    "frame_timeout_sec": 8.0,
+    "keyframe_warmup_frames": 5
+  },
+  "disk_guard": {
+    "snapshot_dir": "cameras/cam_04/snapshots",
+    "max_size_gb": 2.0,
+    "purge_oldest_pct": 20.0
+  },
+  "enabled_classes": [
+    "motorcycle",
+    "bicycle"
+  ]
+}
