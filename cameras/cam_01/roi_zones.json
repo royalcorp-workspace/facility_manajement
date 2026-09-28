@@ -438,8 +438,8 @@
       "debounce_sec": 3.0
     },
     {
-      "tripwire_id": "tw_16",
-      "label": "Tripwire 16",
+      "tripwire_id": "tw_08",
+      "label": "Tripwire 8",
       "active": true,
       "color_hex": "#FF00FF",
       "p1": {

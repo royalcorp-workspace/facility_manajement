@@ -1,10 +1,3 @@
-"""
-Facility Management — Centralized Logging Engine (engine/logger.py)
-Menyediakan ColoredConsoleFormatter berbasis ANSI VT100 (Windows & Linux),
-FileLogFormatter murni bebas ANSI, RotatingFileHandler terukur (5MB, 3 cadangan),
-pemetaan alias fixed-width 8 karakter, session delimiters, serta helper log_error.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -15,11 +8,9 @@ import sys
 import time
 from typing import Any, Optional
 
-# ── Status Inisialisasi Singleton ─────────────────────────────────────────────
 _logging_initialized: bool = False
 _vt100_enabled: bool = False
 
-# ── ANSI Escape Codes ─────────────────────────────────────────────────────────
 RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
@@ -40,7 +31,6 @@ LEVEL_COLORS: dict[int, str] = {
     logging.CRITICAL: BG_RED_BOLD,
 }
 
-# ── Kamus Standarisasi Alias Komponen (Fixed-Width 8 Karakter) ────────────────
 COMPONENT_ALIASES: dict[str, str] = {
     "MasterOrchestrator": "SYSTEM",
     "__main__": "SYSTEM",
@@ -61,7 +51,6 @@ COMPONENT_ALIASES: dict[str, str] = {
 
 
 def get_component_alias(name: str) -> str:
-    """Mengembalikan alias komponen dengan panjang tepat 8 karakter (uppercase)."""
     if name in COMPONENT_ALIASES:
         return COMPONENT_ALIASES[name]
     if name.startswith("notification.") or name == "notification":
@@ -86,7 +75,6 @@ def get_component_alias(name: str) -> str:
 
 
 def enable_windows_vt100() -> bool:
-    """Mengaktifkan ANSI Escape Processing (VT100) pada konsol Windows."""
     global _vt100_enabled
     if _vt100_enabled:
         return True
@@ -113,18 +101,11 @@ def enable_windows_vt100() -> bool:
 
 
 class ColoredConsoleFormatter(logging.Formatter):
-    """
-    Formatter konsol dengan pewarnaan semantik ANSI dan kolom fixed-width.
-    Format: HH:MM:SS │ LEVEL   │ [ALIAS   ] message
-            ↳ Baris kedua:         │ DETAIL  │ -> Mitigasi: ...
-    """
-
     def __init__(self, use_color: bool = True) -> None:
         super().__init__()
         self.use_color = use_color and enable_windows_vt100()
 
     def format(self, record: logging.LogRecord) -> str:
-        # Cek apakah stream dialihkan atau tidak mendukung warna
         use_color = self.use_color
         if not sys.stdout.isatty() and not os.environ.get("FORCE_COLOR"):
             use_color = False
@@ -146,12 +127,9 @@ class ColoredConsoleFormatter(logging.Formatter):
         msg = record.getMessage()
         header = f"{record_time} {sep} {level_str} {sep} {alias_str} {msg}"
 
-        # 1. Format mitigasi khusus jika disertakan via log_error / extra={"mitigation": ...}
         if hasattr(record, "mitigation") and record.mitigation:
             detail_tag = f"{CYAN}DETAIL {RESET}" if use_color else "DETAIL "
             header += f"\n         {sep} {detail_tag} {sep} -> Mitigasi: {record.mitigation}"
-
-        # 2. Format exception info jika ada
         if record.exc_info:
             exc_type, exc_val, _ = record.exc_info
             exc_name = exc_type.__name__ if exc_type else "Error"
@@ -165,11 +143,6 @@ class ColoredConsoleFormatter(logging.Formatter):
 
 
 class FileLogFormatter(logging.Formatter):
-    """
-    Formatter berkas murni tanpa kode ANSI dengan kolom fixed-width.
-    Format: [YYYY-MM-DD HH:MM:SS] [%(levelname)-7s] [%(alias)-8s] %(message)s
-    """
-
     def __init__(self) -> None:
         super().__init__(datefmt="%Y-%m-%d %H:%M:%S")
 
@@ -202,17 +175,9 @@ def setup_logging(
     console_color: bool = True,
     force_reconfigure: bool = False,
 ) -> None:
-    """
-    Inisialisasi sistem logging terpusat Dual-Level:
-    - Console Handler (stdout): Level INFO (bersih, event-driven)
-    - RotatingFileHandler: Level DEBUG (telemetri forensik detail)
-    - Root Logger: Level min(console, file)
-    """
     global _logging_initialized
     if _logging_initialized and not force_reconfigure:
         return
-
-    # Buat direktori logs jika belum ada
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -220,20 +185,15 @@ def setup_logging(
     console_numeric = getattr(logging, log_level.upper(), logging.INFO)
     file_numeric = getattr(logging, file_log_level.upper(), logging.DEBUG)
 
-    # Root logger diset ke level terendah agar pesan DEBUG mengalir ke file
     root_logger.setLevel(min(console_numeric, file_numeric))
 
-    # Bersihkan handler sebelumnya jika ada
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
 
-    # 1. Console Handler (Fixed-Width Colored, level INFO)
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(console_numeric)
     console_handler.setFormatter(ColoredConsoleFormatter(use_color=console_color))
     root_logger.addHandler(console_handler)
-
-    # 2. Rotating File Handler (No ANSI, Fixed-Width, 5MB, level DEBUG)
     file_handler = RotatingFileHandler(
         str(log_path),
         maxBytes=max_bytes,
@@ -244,7 +204,6 @@ def setup_logging(
     file_handler.setFormatter(FileLogFormatter())
     root_logger.addHandler(file_handler)
 
-    # 3. Redam logger pihak ketiga yang bising
     for noisy in ("httpx", "httpcore", "uvicorn.access", "uvicorn.error", "asyncio"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
@@ -266,16 +225,11 @@ def log_error(
     mitigation_hint: Optional[str] = None,
     exc: Optional[Exception] = None,
 ) -> None:
-    """
-    Mencatat error dengan format terstruktur dua baris pada konsol (Error + Mitigasi)
-    serta menyimpan traceback lengkap ke berkas log.
-    """
     logger = component if isinstance(component, logging.Logger) else get_logger(component)
     extra = {"mitigation": mitigation_hint} if mitigation_hint else {}
     logger.error(error_msg, exc_info=exc, extra=extra)
 
 
-# Alias untuk kompatibilitas backward
 log_exception = log_error
 
 
@@ -284,7 +238,6 @@ def log_session_start(
     version: str = "0.4.0",
     pid: Optional[int] = None,
 ) -> None:
-    """Mencatat penanda sesi baru saat sistem boot."""
     current_pid = pid or os.getpid()
     delimiter = f"--- SESSION START: {app_name} v{version} (PID: {current_pid}) ---"
     logger = get_logger("SYSTEM")
@@ -294,7 +247,6 @@ def log_session_start(
 def log_session_end(
     status: str = "Graceful Shutdown Complete (shutdown selesai)",
 ) -> None:
-    """Mencatat penanda akhir sesi saat sistem berhenti."""
     delimiter = f"--- SESSION END: {status} ---"
     logger = get_logger("SYSTEM")
     logger.info(delimiter)
@@ -306,9 +258,6 @@ def render_banner(
     details: dict[str, str],
     width: int = 68,
 ) -> str:
-    """
-    Menghasilkan tampilan banner startup berbentuk compact card Unicode.
-    """
     inner_width = width - 4
     top = f"┌{'─' * (width - 2)}┐"
     bottom = f"└{'─' * (width - 2)}┘"
@@ -329,9 +278,6 @@ def render_preflight_table(
     col2_title: str = "STATUS / DETAIL KESIAPAN",
     width: int = 70,
 ) -> str:
-    """
-    Menghasilkan tabel checklist pre-flight berbingkai Unicode yang rapi dan elegan.
-    """
     col1_width = 24
     col2_width = width - col1_width - 3
 

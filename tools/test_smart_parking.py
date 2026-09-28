@@ -31,8 +31,8 @@ def test_dynamic_smart_parking():
     roi_cfg = load_roi_zones(Path("cameras/cam_01/roi_zones.json"))
     num_polys = len(roi_cfg.polygons)
     num_tw = len(roi_cfg.tripwires)
-    assert num_polys == 7, f"Expected 7 polygons, got {num_polys}"
-    assert num_tw == 7, f"Expected 7 tripwires, got {num_tw}"
+    assert num_polys == 8, f"Expected 8 polygons, got {num_polys}"
+    assert num_tw == 8, f"Expected 8 tripwires, got {num_tw}"
     print(f"  ✓ Successfully loaded {num_polys} polygons and {num_tw} tripwires.")
 
     print("[2/6] Verifying 1-to-1 Pairing via Suffix Index...")
@@ -45,7 +45,7 @@ def test_dynamic_smart_parking():
     # Inisialisasi tracker dengan kapasitas dinamis
     tracker = SmartParkingTracker(dwell_threshold_sec=10.0)
 
-    # 1. State Awal: Seluruh 7 slot kosong
+    # 1. State Awal: Seluruh 8 slot kosong
     stats = tracker.update(
         tracks=[],
         polygons=roi_cfg.polygons,
@@ -53,9 +53,9 @@ def test_dynamic_smart_parking():
         scale_y=3.0,
         current_time=1000.0,
     )
-    assert stats["total_slots"] == 7
+    assert stats["total_slots"] == 8
     assert stats["occupied_slots"] == 0
-    assert stats["available_slots"] == 7
+    assert stats["available_slots"] == 8
     print(f"  ✓ Dynamic Capacity: {stats['available_slots']}/{stats['total_slots']} slots available.")
 
     print("[3/6] Testing vehicle dwell progression (< 10s)...")
@@ -84,7 +84,7 @@ def test_dynamic_smart_parking():
     )
     s1 = stats["slot_states"][roi_cfg.polygons[0].zone_id]
     assert not s1.occupied, "Slot should NOT be occupied on initial frame"
-    assert stats["available_slots"] == 7
+    assert stats["available_slots"] == 8
 
     # T = 1005.0s (5s elapsed) -> Settling
     stats = tracker.update(
@@ -97,7 +97,7 @@ def test_dynamic_smart_parking():
     s1 = stats["slot_states"][roi_cfg.polygons[0].zone_id]
     assert s1.dwell_duration == 5.0
     assert not s1.occupied
-    print("  ✓ Dwell at 5s is settling (occupied=False, available=7/7).")
+    print("  ✓ Dwell at 5s is settling (occupied=False, available=8/8).")
 
     print("[4/6] Testing vehicle dwell threshold reached (>= 10s)...")
     # T = 1010.5s (10.5s elapsed) -> OCCUPIED
@@ -111,7 +111,7 @@ def test_dynamic_smart_parking():
     s1 = stats["slot_states"][roi_cfg.polygons[0].zone_id]
     assert s1.occupied, "Slot must be marked OCCUPIED after 10.5s"
     assert stats["occupied_slots"] == 1
-    assert stats["available_slots"] == 6
+    assert stats["available_slots"] == 7
     print(f"  ✓ Dwell at 10.5s OCCUPIED: available={stats['available_slots']}/{stats['total_slots']}.")
 
     print("[5/6] Testing Gate Tripwire Telemetry & Flash Trigger...")

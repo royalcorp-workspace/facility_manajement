@@ -18,6 +18,7 @@ from engine.smart_parking import (
     bbox_ios,
     bbox_polygon_overlap_ratio,
     deduplicate_motorcycle_tracks,
+    is_valid_motorcycle_anatomy,
 )
 from engine.tracker_interface import TrackResult
 
@@ -61,9 +62,10 @@ def main():
         dtype=np.int32,
     )
 
-    # 3. Pengetatan Footprint Spasial (Singkirkan Motor Luar & Reject Standalone Overlap)
+    # 3. Pengetatan Footprint Spasial & Validasi Anatomi (Singkirkan Bbox Raksasa & Motor Luar)
     candidate_tracks = []
     outside_tracks = []
+    drum_excl_x_scaled = int(720 * sx)
 
     for r in results:
         if r.class_label not in ["motorcycle", "bicycle"]:
@@ -72,6 +74,18 @@ def main():
         cx = float((rx1 + rx2) / 2.0)
         wheel_y = float(ry2)
         wheel_pt = (int(cx), int(wheel_y))
+
+        # Filter Drum Exclusion (x < 720 skala 1080p)
+        if int(cx) < drum_excl_x_scaled:
+            outside_tracks.append((r, f"drum_excl (cx={cx:.1f} < {drum_excl_x_scaled})", 0.0))
+            continue
+
+        # Filter Anatomi (Menolak Bbox raksasa abnormal/bayangan tanah)
+        if not is_valid_motorcycle_anatomy(r.bbox, sx, sy):
+            w_1080p = (rx2 - rx1) / sx
+            h_1080p = (ry2 - ry1) / sy
+            outside_tracks.append((r, f"anatomical_reject (w_1080={w_1080p:.0f}px, h_1080={h_1080p:.0f}px)", 0.0))
+            continue
 
         # Motor hanya sah jika titik tumpu roda bawah (cx, y2) berada DI DALAM poligon zone_01
         wheel_in = cv2.pointPolygonTest(pts_scaled, wheel_pt, False) >= 0
@@ -165,6 +179,7 @@ def main():
         block_capacity=30,
         vehicle_classes={"motorcycle", "bicycle"},
         stationary_dwell_sec=0.0,
+        block_exclusion_x_1080p=720,
     )
 
     random.seed(42)

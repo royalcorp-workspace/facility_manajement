@@ -26,6 +26,7 @@ storage/*.db-shm
 *.db-shm
 logs/*.log
 *.log
+*.log.*
 !logs/.gitkeep
 
 # ── Snapshots & Media Captures ─────────────────────────────────────────────

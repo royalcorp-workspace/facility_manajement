@@ -284,7 +284,6 @@ class EventDispatcher:
                 ev.insert(db_conn)
                 generated_events.append(ev)
 
-        # C. Safe Walkways (K3 Pedestrian Corridor Compliance)
         if roi_config.active_safe_walkways:
             walkway_events = self.spatial_engine.evaluate_walkways(
                 cam_id, tracks, roi_config.active_safe_walkways, processed_frame.scale_x, processed_frame.scale_y, now
@@ -316,7 +315,6 @@ class EventDispatcher:
                 ev.insert(db_conn)
                 generated_events.append(ev)
 
-        # D. Density & Crowd Monitors (Overcrowding / Congestion Alert)
         if roi_config.active_density_rules:
             density_events = self.spatial_engine.evaluate_density(
                 cam_id,
@@ -352,10 +350,8 @@ class EventDispatcher:
                 ev.insert(db_conn)
                 generated_events.append(ev)
 
-        # ── 3. CLEANUP TRACK MEMORY DI SPATIAL RULE ENGINE ────────────────────
         self.spatial_engine.cleanup_tracks(set(current_track_map.keys()))
 
-        # ── 4. CLEANUP ORPHANED OPEN EVENTS (Track hilang saat di dalam zone) ──
         keys_to_remove = []
         for key, state in self.open_events.items():
             if state.track_id not in current_track_map:
@@ -398,7 +394,6 @@ class EventDispatcher:
         return generated_events
 
     def _hex_to_bgr(self, hex_color: str) -> Tuple[int, int, int]:
-        """Konversi '#RRGGBB' ke (B, G, R)."""
         hex_color = hex_color.lstrip("#")
         if len(hex_color) == 6:
             r = int(hex_color[0:2], 16)
@@ -416,14 +411,8 @@ class EventDispatcher:
         dwell_sec: float = 0.0,
         custom_note: Optional[str] = None,
     ) -> str:
-        """
-        Anotasi raw frame (1080p) dan simpan sebagai JPEG kualitas 85.
-        Mendukung ROIZone (poligon), TripwireRule (garis 2 titik), BarrierRule (polyline),
-        SafeWalkwayRule (koridor), dan DensityRule.
-        """
         annotated = processed_frame.raw_frame.copy()
 
-        # 1. Gambar Geometri ROI / Aturan (koordinat raw 1080p)
         color_bgr = (0, 255, 0)
         label_text = "ROI"
 
@@ -432,12 +421,10 @@ class EventDispatcher:
             color_bgr = self._hex_to_bgr(color_hex)
             label_text = getattr(zone, "label", getattr(zone, "zone_id", getattr(zone, "rule_id", "Zone")))
 
-            # A. Jika Tripwire (Line)
             if hasattr(zone, "p1") and hasattr(zone, "p2"):
                 pt1 = (int(zone.p1.x), int(zone.p1.y))
                 pt2 = (int(zone.p2.x), int(zone.p2.y))
                 cv2.line(annotated, pt1, pt2, color_bgr, thickness=3)
-                # Panah arah jika unidirectional
                 direction = getattr(zone, "direction", "BIDIRECTIONAL")
                 if direction in ("A_TO_B", "B_TO_A"):
                     mid_x = (pt1[0] + pt2[0]) // 2
@@ -451,17 +438,13 @@ class EventDispatcher:
                     tip_y = int(mid_y + ny * 30)
                     cv2.arrowedLine(annotated, (mid_x, mid_y), (tip_x, tip_y), color_bgr, 3, tipLength=0.4)
 
-            # B. Jika Polyline Barrier
             elif hasattr(zone, "points") and getattr(zone, "rule_id", "").startswith("bar_"):
                 pts = np.array([[p.x, p.y] for p in zone.points], dtype=np.int32)
                 cv2.polylines(annotated, [pts], isClosed=False, color=color_bgr, thickness=3)
-
-            # C. Jika Poligon tertutup (ROIZone, SafeWalkway, Density, Exclusion)
             elif hasattr(zone, "points"):
                 pts = np.array([[p.x, p.y] for p in zone.points], dtype=np.int32)
                 cv2.polylines(annotated, [pts], isClosed=True, color=color_bgr, thickness=3)
 
-        # 2. Gambar Bounding Box (jika ada track)
         track_id_str = "N/A"
         class_str = "Object"
         rx1, ry1 = 30, 60
@@ -472,7 +455,6 @@ class EventDispatcher:
             rx1, ry1, rx2, ry2 = processed_frame.map_bbox_to_raw(*track.bbox)
             cv2.rectangle(annotated, (rx1, ry1), (rx2, ry2), (0, 255, 0), thickness=3)
 
-        # 3. Text Badge dengan background solid
         if custom_note:
             text = f"ID:{track_id_str} | {class_str} | {label_text} ({event_type.upper()}) | {custom_note}"
         else:
@@ -488,7 +470,6 @@ class EventDispatcher:
         cv2.rectangle(annotated, (rx1, bg_y1), (rx1 + text_w + 10, bg_y2), (0, 0, 0), cv2.FILLED)
         cv2.putText(annotated, text, (rx1 + 5, bg_y2 - 5), font, font_scale, (255, 255, 255), thickness)
 
-        # 4. Tentukan Path File
         dt_str = datetime.fromtimestamp(processed_frame.timestamp, tz=timezone.utc).strftime("%Y%m%d_%H%M%S")
         dir_path = Path(f"cameras/{processed_frame.camera_id}/snapshots")
         dir_path.mkdir(parents=True, exist_ok=True)
@@ -496,6 +477,5 @@ class EventDispatcher:
         filename = f"{event_type}_{track_id_str}_{dt_str}.jpg"
         file_path = dir_path / filename
 
-        # 5. Simpan JPEG Kualitas 85
         cv2.imwrite(str(file_path), annotated, [cv2.IMWRITE_JPEG_QUALITY, self.snapshot_quality])
         return str(file_path)

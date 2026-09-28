@@ -5,8 +5,8 @@
   "resolution": {
     "capture_width": 1920,
     "capture_height": 1080,
-    "ai_width": 640,
-    "ai_height": 360
+    "ai_width": 1280,
+    "ai_height": 720
   },
   "capture": {
     "queue_maxsize": 1,

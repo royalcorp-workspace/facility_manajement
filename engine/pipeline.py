@@ -1,8 +1,3 @@
-"""
-Modul Pipeline & Camera Orchestrator untuk Facility Management Vision Engine.
-Menghubungkan Preprocessor -> MotionGate -> Detector (BoundedSemaphore) -> Tracker -> EventDispatcher -> AlertDispatcher -> Buffer O(1) -> SQLite.
-"""
-
 from __future__ import annotations
 
 import queue
@@ -36,11 +31,6 @@ if TYPE_CHECKING:
 
 
 class CameraOrchestrator(threading.Thread):
-    """
-    Thread pengelola pipeline pengolahan visual untuk satu kamera.
-    Mendukung proteksi CPU melalui BoundedSemaphore dan off-lock buffer live streaming.
-    """
-
     def __init__(
         self,
         camera_config: CameraConfig,
@@ -81,14 +71,12 @@ class CameraOrchestrator(threading.Thread):
         self._last_fps_time: float = 0.0
         self._fps_frame_count: int = 0
 
-        # Smart Parking Tracker (Kapasitas Dinamis Berdasarkan Poligon Aktif / Block Mode)
         parking_classes = set(self.camera_config.enabled_classes) if (getattr(self.camera_config, "enabled_classes", None)) else {"car", "truck", "bus"}
         _parking_mode = getattr(self.camera_config, "parking_mode", "slot") or "slot"
         _block_capacity = int(getattr(self.camera_config, "block_capacity", 30) or 30)
         _is_block = _parking_mode == "motorcycle_block"
         _stationary_dwell = 0.0 if _is_block else 5.0
 
-        # Quiescent Baseline Scan & Warmup: objek diam permanen di area motor dipindai berkala 3.0s
         self.initial_warmup_frames: int = 50 if _is_block else initial_warmup_frames
         self._quiescent_scan_interval: float = 3.0 if _is_block else quiescent_scan_interval
 
@@ -98,12 +86,8 @@ class CameraOrchestrator(threading.Thread):
             parking_mode=_parking_mode,
             block_capacity=_block_capacity,
             stationary_dwell_sec=_stationary_dwell,
-            # Exclusion zone drum biru cam_03: motor di x < 720 (1080p) dikecualikan dari kuota.
-            # Hanya aktif untuk motorcycle_block — poligon ROI JSON tidak diubah.
             block_exclusion_x_1080p=720 if _is_block else None,
         )
-
-        # Inisialisasi komponen default jika tidak di-inject
         self.motion_gate = motion_gate or MotionGate(
             pixel_threshold=25,
             min_changed_pixels_pct=0.005,
@@ -136,7 +120,6 @@ class CameraOrchestrator(threading.Thread):
 
     @property
     def frame_count(self) -> int:
-        """Alias counter frame untuk kompatibilitas."""
         return self.processed_count
 
     def create_annotated_frame(
@@ -147,14 +130,6 @@ class CameraOrchestrator(threading.Thread):
         is_warmup: bool = False,
         fps: Optional[float] = None,
     ) -> np.ndarray:
-        """
-        Pembuatan annotated frame:
-        1. Auto-scaling koordinat dari 1080p native ke resolusi canvas frame aktif saat ini:
-           scale_x = frame_width / 1920.0
-           scale_y = frame_height / 1080.0
-        2. Evaluasi status okupansi parkir dinamis (Smart Parking)
-        3. Render garis petak poligon, tripwire, dan status okupansi (Enterprise IVA Style)
-        """
         annotated = frame.copy()
         frame_h, frame_w = annotated.shape[:2]
 
@@ -167,7 +142,6 @@ class CameraOrchestrator(threading.Thread):
         scale_x = frame_w / ref_w
         scale_y = frame_h / ref_h
 
-        # Update status okupansi parkir dinamis
         parking_stats = self.parking_tracker.update(
             tracks=tracks,
             polygons=self.roi_config.polygons,
@@ -181,7 +155,6 @@ class CameraOrchestrator(threading.Thread):
         cam_id = self.camera_config.camera_id if self.camera_config else "cam_01"
         cam_name = self.camera_config.display_name if self.camera_config else "Koridor Utama"
 
-        # Render seluruh visual kontur interaktif (Modern IVA Look)
         self.parking_tracker.render_overlay(
             canvas=annotated,
             polygons=self.roi_config.polygons,
@@ -199,17 +172,14 @@ class CameraOrchestrator(threading.Thread):
         return annotated
 
     def stop(self) -> None:
-        """Sinyal penghentian orchestrator thread."""
         self._stop_event.set()
 
     def run(self) -> None:
-        """Loop utama pemrosesan frame dari proc_queue."""
         db_conn: Optional[sqlite3.Connection] = None
 
         try:
             db_conn = get_writer_conn()
             writer_lock = get_writer_lock()
-            # Update registry status ke 'active'
             registry = CameraRegistry(
                 camera_id=self.camera_config.camera_id,
                 display_name=self.camera_config.display_name,
@@ -218,7 +188,6 @@ class CameraOrchestrator(threading.Thread):
                 registry.upsert(db_conn)
                 registry.update_status(db_conn, "active")
 
-            # Warmup detector
             self.detector.warmup(
                 (self.camera_config.resolution.ai_height, self.camera_config.resolution.ai_width, 3)
             )
@@ -241,31 +210,23 @@ class CameraOrchestrator(threading.Thread):
                         self._fps_frame_count = 0
                         self._last_fps_time = now_wall
 
-                # 1. Motion Gate Check
                 should_run_dnn, reason = self.motion_gate.should_process(
                     processed_frame.ai_frame,
                     processed_frame.timestamp,
                 )
-
-                # Evaluasi Initial Cold-Start Scan & Periodic Quiescent Sanity Scan
                 is_warmup = getattr(processed_frame, "is_warmup", False) or (self.processed_count <= self.initial_warmup_frames)
                 force_full_inference = False
 
                 if is_warmup:
-                    # Cold-start warmup: bypass motion gating secara mutlak dan paksa inferensi YOLO penuh
                     force_full_inference = True
                     self.last_motion_detected_time = processed_frame.timestamp
                 else:
-                    # Evaluasi gerakan normal
                     if should_run_dnn and reason == "motion":
                         self.last_motion_detected_time = processed_frame.timestamp
                     elif self.last_motion_detected_time > 0:
-                        # Cek quiescent sanity scan (jika tidak ada gerakan selama 15 detik berturut-turut)
                         if (processed_frame.timestamp - self.last_motion_detected_time) >= self._quiescent_scan_interval:
                             force_full_inference = True
                             self.last_motion_detected_time = processed_frame.timestamp
-
-                # Evaluasi giliran inferensi (Staggered AI Cadence saat multi-kamera)
                 is_turn = (self.total_cameras <= 1) or (
                     (self.processed_count + self.camera_index) % self.total_cameras == 0
                 )
@@ -279,20 +240,16 @@ class CameraOrchestrator(threading.Thread):
                         self.motion_detected_count += 1
 
                     if is_turn or force_full_inference:
-                        # PROTEKSI CPU: Eksekusi inferensi DNN dibatasi oleh Global BoundedSemaphore
                         if self.ai_semaphore is not None:
                             with self.ai_semaphore:
                                 detections = self.detector.detect(processed_frame.ai_frame)
                         else:
                             detections = self.detector.detect(processed_frame.ai_frame)
                     else:
-                        # Frame coasting: lewati DNN untuk memberi giliran kamera lain
                         is_coasting = True
                 else:
-                    # Frame tanpa gerakan & bukan sanity scan: masuk mode coasting agar track aktif tidak terhapus
                     is_coasting = True
 
-                # 2. Update Tracker (Deteksi baru vs Coasting)
                 if is_coasting and hasattr(self.tracker, "coast"):
                     tracks = self.tracker.coast(
                         frame_number=processed_frame.frame_number,
@@ -305,7 +262,6 @@ class CameraOrchestrator(threading.Thread):
                         timestamp=processed_frame.timestamp,
                     )
 
-                # 3. Process Events & Snapshots
                 with writer_lock:
                     events = self.event_dispatcher.process_tracks(
                         processed_frame=processed_frame,
@@ -314,7 +270,6 @@ class CameraOrchestrator(threading.Thread):
                         db_conn=db_conn,
                     )
 
-                # Update telemetri gate tripwire crossing & flash trigger
                 if events:
                     for ev in events:
                         if ev.event_type == "LINE_CROSSING":
@@ -340,7 +295,6 @@ class CameraOrchestrator(threading.Thread):
                                 timestamp=processed_frame.timestamp,
                             )
 
-                # 4. Dispatch Alerts non-blocking
                 if self.alert_dispatcher and events:
                     from notification.dispatcher import AlertPacket
                     for ev in events:
@@ -357,9 +311,7 @@ class CameraOrchestrator(threading.Thread):
                             )
                         )
 
-                # 5. Off-Lock Live Video Preview Encoding & Buffer Update
                 if self.frame_buffer is not None:
-                    # Anotasi visual live feed dengan auto-scaling ROI (1080p -> Canvas)
                     live_vis = self.create_annotated_frame(
                         frame=processed_frame.ai_frame,
                         tracks=tracks,
@@ -368,7 +320,6 @@ class CameraOrchestrator(threading.Thread):
                         fps=self.fps,
                     )
 
-                    # OFF-LOCK ENCODING: Kompresi JPEG di luar penahanan lock buffer
                     ret, jpeg_bytes = cv2.imencode(
                         ".jpg",
                         live_vis,

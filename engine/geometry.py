@@ -3,13 +3,11 @@ from __future__ import annotations
 from typing import Sequence
 
 
-# ── Type alias ────────────────────────────────────────────────────────────────
-Point = tuple[float, float]          # (x, y)
-Polygon = Sequence[Point]            # urutan titik [(x0,y0), (x1,y1), ...]
-BBox = tuple[float, float, float, float]  # (x1, y1, x2, y2) — top-left, bottom-right
+Point = tuple[float, float]
+Polygon = Sequence[Point]
+BBox = tuple[float, float, float, float]
 
 
-# POINT-IN-POLYGON
 def point_in_polygon(point: Point, polygon: Polygon) -> bool:
     x, y = point
     n = len(polygon)
@@ -20,7 +18,6 @@ def point_in_polygon(point: Point, polygon: Polygon) -> bool:
         xi, yi = polygon[i]
         xj, yj = polygon[j]
 
-        # Cek apakah ray horizontal ke kanan melewati edge (i, j)
         if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
             inside = not inside
         j = i
@@ -49,7 +46,6 @@ def bbox_iou(box_a: BBox, box_b: BBox) -> float:
     ax1, ay1, ax2, ay2 = box_a
     bx1, by1, bx2, by2 = box_b
 
-    # Koordinat irisan
     ix1 = max(ax1, bx1)
     iy1 = max(ay1, by1)
     ix2 = min(ax2, bx2)
@@ -117,20 +113,11 @@ def check_bbox_in_zone(
             raise ValueError(f"Method tidak dikenal: '{method}'. Pilih: bottom_center, centroid, any_corner, all_corners")
 
 
-# ── ADVANCED VECTOR GEOMETRY & CROSSING ANALYTICS ────────────────────────────
-
 def ccw(a: Point, b: Point, c: Point) -> float:
-    """
-    Menghitung orientasi 2D signed determinant dari titik a, b, c.
-    > 0: Belok kiri (counter-clockwise)
-    < 0: Belok kanan (clockwise)
-    = 0: Kolinier (segaris)
-    """
     return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 
 
 def on_segment(p1: Point, p2: Point, q: Point) -> bool:
-    """Cek apakah titik q terletak pada segmen p1-p2 (dengan asumsi kolinier)."""
     return (
         min(p1[0], p2[0]) <= q[0] <= max(p1[0], p2[0])
         and min(p1[1], p2[1]) <= q[1] <= max(p1[1], p2[1])
@@ -138,10 +125,6 @@ def on_segment(p1: Point, p2: Point, q: Point) -> bool:
 
 
 def segments_intersect(p1: Point, p2: Point, p3: Point, p4: Point) -> bool:
-    """
-    Menentukan apakah segmen garis p1-p2 berpotongan dengan segmen p3-p4.
-    Algoritma aljabar murni O(1) berbasis signed determinant.
-    """
     d1 = ccw(p3, p4, p1)
     d2 = ccw(p3, p4, p2)
     d3 = ccw(p1, p2, p3)
@@ -171,32 +154,20 @@ def check_line_crossing(
     line_end: Point,
     allowed_direction: str = "BOTH",
 ) -> tuple[bool, str]:
-    """
-    Evaluasi apakah lintasan p_prev -> p_curr memotong segmen line_start -> line_end
-    dan apakah arahnya sesuai allowed_direction ("BOTH", "A_TO_B", "B_TO_A").
-
-    Returns:
-        (is_crossed, actual_direction)
-    """
     if not segments_intersect(p_prev, p_curr, line_start, line_end):
         return False, "NONE"
 
     x1, y1 = line_start
     x2, y2 = line_end
 
-    # Vektor garis tripwire: (dx, dy)
     dx = x2 - x1
     dy = y2 - y1
 
-    # Vektor normal garis: N = (-dy, dx)
-    # Vektor pergerakan track: V = (p_curr[0] - p_prev[0], p_curr[1] - p_prev[1])
     vx = p_curr[0] - p_prev[0]
     vy = p_curr[1] - p_prev[1]
 
     dot = vx * (-dy) + vy * dx
 
-    # Jika dot > 0 -> bergerak searah vektor normal kiri (A_TO_B)
-    # Jika dot < 0 -> bergerak berlawanan arah vektor normal (B_TO_A)
     if dot > 0:
         actual_direction = "A_TO_B"
     elif dot < 0:
@@ -215,12 +186,6 @@ def check_polyline_crossing(
     polyline: Sequence[Point],
     allowed_direction: str = "BOTH",
 ) -> tuple[bool, Optional[int], str]:
-    """
-    Evaluasi apakah lintasan p_prev -> p_curr memotong sembarang segmen dalam polyline.
-
-    Returns:
-        (is_crossed, segment_index, actual_direction)
-    """
     n = len(polyline)
     if n < 2:
         return False, None, "NONE"
