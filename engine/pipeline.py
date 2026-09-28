@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from engine.config_loader import CameraConfig, ROIZonesConfig
-from engine.detector_interface import DetectorBase
+from engine.detector_interface import DetectorBase, DetectionResult
 from engine.detector_impl import YOLO11nDetector, SyntheticMockDetector
 from engine.event_dispatcher import EventDispatcher
 from engine.geometry import scale_points
@@ -71,7 +71,12 @@ class CameraOrchestrator(threading.Thread):
         self._last_fps_time: float = 0.0
         self._fps_frame_count: int = 0
 
-        parking_classes = set(self.camera_config.enabled_classes) if (getattr(self.camera_config, "enabled_classes", None)) else {"car", "truck", "bus"}
+        if getattr(self.camera_config, "parking_classes", None):
+            parking_classes = set(self.camera_config.parking_classes)
+        elif getattr(self.camera_config, "enabled_classes", None):
+            parking_classes = set(self.camera_config.enabled_classes)
+        else:
+            parking_classes = {"car", "truck", "bus"}
         _parking_mode = getattr(self.camera_config, "parking_mode", "slot") or "slot"
         _block_capacity = int(getattr(self.camera_config, "block_capacity", 30) or 30)
         _is_block = _parking_mode == "motorcycle_block"
@@ -82,6 +87,9 @@ class CameraOrchestrator(threading.Thread):
 
         _debug_diag = bool(getattr(self.camera_config, "debug_diagnostics", False))
         _debug_zone = getattr(self.camera_config, "debug_target_zone", None)
+        _debug_snap = bool(getattr(self.camera_config, "debug_snapshots", False))
+        _debug_snap_max = int(getattr(self.camera_config, "debug_snapshot_max_files", 300) or 300)
+        _debug_snap_min_int = float(getattr(self.camera_config, "debug_snapshot_min_interval_s", 10.0) or 10.0)
 
         self.parking_tracker = parking_tracker or SmartParkingTracker(
             dwell_threshold_sec=10.0,
@@ -92,6 +100,9 @@ class CameraOrchestrator(threading.Thread):
             block_exclusion_x_1080p=720 if _is_block else None,
             debug_diagnostics=_debug_diag,
             debug_target_zone=_debug_zone,
+            debug_snapshots=_debug_snap,
+            debug_snapshot_max_files=_debug_snap_max,
+            debug_snapshot_min_interval_s=_debug_snap_min_int,
         )
         self.motion_gate = motion_gate or MotionGate(
             pixel_threshold=25,
@@ -134,6 +145,7 @@ class CameraOrchestrator(threading.Thread):
         timestamp: float,
         is_warmup: bool = False,
         fps: Optional[float] = None,
+        raw_detections: Optional[List[DetectionResult]] = None,
     ) -> np.ndarray:
         annotated = frame.copy()
         frame_h, frame_w = annotated.shape[:2]
@@ -155,6 +167,8 @@ class CameraOrchestrator(threading.Thread):
             current_time=timestamp,
             is_warmup=is_warmup,
             frame_count=getattr(self, "processed_count", None),
+            raw_ai_frame=frame,
+            raw_detections=raw_detections,
         )
 
         display_fps = fps if fps is not None else getattr(self, "fps", 20.0)
@@ -324,6 +338,7 @@ class CameraOrchestrator(threading.Thread):
                         timestamp=processed_frame.timestamp,
                         is_warmup=is_warmup,
                         fps=self.fps,
+                        raw_detections=detections if not is_coasting else None,
                     )
 
                     ret, jpeg_bytes = cv2.imencode(

@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="api-key" content="{{ api_key }}">
   <title>Facility Management — Live Surveillance Hub</title>
   <link rel="stylesheet" href="/static/css/dashboard.css">
 </head>
@@ -42,7 +41,7 @@
       {% set default_cam = cameras[0].camera_id if cameras else 'cam_01' %}
       <img 
         id="stream-feed" 
-        src="/video_feed/{{ default_cam }}{% if api_key %}?api_key={{ api_key }}{% endif %}" 
+        src="/video_feed/{{ default_cam }}" 
         alt="Live Stream Feed {{ default_cam }}" 
         class="stream-feed"
       >
@@ -71,9 +70,6 @@
   ========================================================================
   -->
 
-  <script>
-    window.FACILITY_API_KEY = "{{ api_key }}";
-  </script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

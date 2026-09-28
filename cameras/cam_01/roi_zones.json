@@ -31,9 +31,7 @@
       ],
       "linger_threshold_sec": 10,
       "target_classes": [
-        "car",
-        "truck",
-        "bus"
+        "car"
       ]
     },
     {
@@ -65,9 +63,7 @@
       ],
       "linger_threshold_sec": 10,
       "target_classes": [
-        "car",
-        "truck",
-        "bus"
+        "car"
       ]
     },
     {
@@ -99,9 +95,7 @@
       ],
       "linger_threshold_sec": 10,
       "target_classes": [
-        "car",
-        "truck",
-        "bus"
+        "car"
       ]
     },
     {
@@ -133,9 +127,7 @@
       ],
       "linger_threshold_sec": 10,
       "target_classes": [
-        "car",
-        "truck",
-        "bus"
+        "car"
       ]
     },
     {
@@ -167,9 +159,7 @@
       ],
       "linger_threshold_sec": 10,
       "target_classes": [
-        "car",
-        "truck",
-        "bus"
+        "car"
       ]
     },
     {
@@ -201,9 +191,7 @@
       ],
       "linger_threshold_sec": 10,
       "target_classes": [
-        "car",
-        "truck",
-        "bus"
+        "car"
       ]
     },
     {
@@ -235,9 +223,7 @@
       ],
       "linger_threshold_sec": 10,
       "target_classes": [
-        "car",
-        "truck",
-        "bus"
+        "car"
       ]
     },
     {
@@ -256,11 +242,11 @@
           "y": 496
         },
         {
-          "x": 1588,
+          "x": 1535,
           "y": 499
         },
         {
-          "x": 1852,
+          "x": 1775,
           "y": 645
         }
       ],
@@ -269,9 +255,7 @@
       ],
       "linger_threshold_sec": 10,
       "target_classes": [
-        "car",
-        "truck",
-        "bus"
+        "car"
       ]
     }
   ],
@@ -447,7 +431,7 @@
         "y": 657
       },
       "p2": {
-        "x": 1853,
+        "x": 1775,
         "y": 658
       },
       "direction": "BOTH",

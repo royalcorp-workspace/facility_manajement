@@ -21,5 +21,11 @@
     "purge_oldest_pct": 20.0
   },
   "debug_diagnostics": false,
-  "debug_target_zone": "zone_04"
+  "debug_target_zone": "zone_04",
+  "debug_snapshots": false,
+  "debug_snapshot_max_files": 300,
+  "debug_snapshot_min_interval_s": 10.0,
+  "parking_classes": [
+    "car"
+  ]
 }

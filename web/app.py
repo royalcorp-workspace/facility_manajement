@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -20,26 +20,6 @@ logger = get_logger(__name__)
 
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
-
-
-def verify_api_key(request: Request) -> str:
-    """
-    Dependency keamanan API Key:
-    1. Membaca API Key dari HTTP Header 'X-API-Key'.
-    2. Fallback membaca dari Query Parameter '?api_key=...' (atau '?x-api-key=...').
-    3. Jika tidak ada atau tidak cocok, lempar HTTP 401 Unauthorized.
-    """
-    expected_key = os.getenv("API_KEY", "facility-royal-2026")
-    provided_key = request.headers.get("X-API-Key")
-    if not provided_key:
-        provided_key = request.query_params.get("api_key") or request.query_params.get("x-api-key")
-
-    if not provided_key or provided_key != expected_key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing API Key",
-        )
-    return provided_key
 
 
 def create_app(
@@ -58,17 +38,15 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
-        api_key = os.getenv("API_KEY", "facility-royal-2026")
         return templates.TemplateResponse(
             "index.html",
             {
                 "request": request,
                 "cameras": camera_configs,
-                "api_key": api_key,
             },
         )
 
-    @app.get("/video_feed/{camera_id}", dependencies=[Depends(verify_api_key)])
+    @app.get("/video_feed/{camera_id}")
     async def video_feed(camera_id: str):
         if camera_id not in cam_map and camera_id not in buffer.get_registered_cameras():
             raise HTTPException(status_code=404, detail=f"Kamera '{camera_id}' tidak ditemukan")
@@ -132,7 +110,7 @@ def create_app(
             media_type="multipart/x-mixed-replace; boundary=frame",
         )
 
-    @app.get("/api/status/{camera_id}", dependencies=[Depends(verify_api_key)])
+    @app.get("/api/status/{camera_id}")
     async def get_camera_status(camera_id: str):
         cfg = cam_map.get(camera_id)
         if not cfg:
@@ -198,7 +176,7 @@ def create_app(
             "parking": parking_info,
         }
 
-    @app.get("/api/cameras", dependencies=[Depends(verify_api_key)])
+    @app.get("/api/cameras")
     async def get_cameras():
         """Daftar seluruh kamera aktif dan telemetrinya."""
         result = []
@@ -254,7 +232,7 @@ def create_app(
             })
         return result
 
-    @app.get("/api/zones", dependencies=[Depends(verify_api_key)])
+    @app.get("/api/zones")
     async def get_all_zones(cam: Optional[str] = None):
         """Dapatkan seluruh definisi zona ROI (poligon & tripwire) untuk seluruh kamera atau spesifik via ?cam=."""
         import json
@@ -279,7 +257,7 @@ def create_app(
                 result[cfg.camera_id] = {"polygons": [], "tripwires": []}
         return result
 
-    @app.get("/api/zones/{camera_id}", dependencies=[Depends(verify_api_key)])
+    @app.get("/api/zones/{camera_id}")
     async def get_camera_zones(camera_id: str):
         """Dapatkan definisi zona ROI spesifik untuk kamera yang diminta."""
         import json
@@ -291,7 +269,7 @@ def create_app(
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Gagal membaca konfigurasi zona: {e}")
 
-    @app.get("/api/incidents", dependencies=[Depends(verify_api_key)])
+    @app.get("/api/incidents")
     async def get_incidents():
         """Dapatkan log insiden/lifecycle events terakhir dari SQLite database."""
         try:
@@ -308,7 +286,7 @@ def create_app(
             logger.error(f"[API] Gagal mengambil insiden: {e}")
             return []
 
-    @app.post("/api/incidents/{incident_id}/resolve", dependencies=[Depends(verify_api_key)])
+    @app.post("/api/incidents/{incident_id}/resolve")
     async def resolve_incident_endpoint(incident_id: int):
         """Tandai insiden sebagai telah ditangani oleh operator (thread-safe)."""
         from storage.database import resolve_incident
@@ -326,7 +304,7 @@ def create_app(
             "resolved_time": datetime.now(timezone.utc).isoformat(),
         }
 
-    @app.get("/snapshots/{camera_id}/{filename}", dependencies=[Depends(verify_api_key)])
+    @app.get("/snapshots/{camera_id}/{filename}")
     async def get_snapshot(camera_id: str, filename: str):
         """Menyajikan file snapshot JPEG bukti secara aman."""
         base_dir = Path(f"cameras/{camera_id}/snapshots").resolve()

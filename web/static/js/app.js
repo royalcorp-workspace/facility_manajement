@@ -8,7 +8,7 @@
  *   - Incident Audit Trail Table (GET /api/incidents)
  *   - Interactive Incident Resolve (POST /api/incidents/{id}/resolve)
  *   - High-Res 1080p Evidence Snapshot Modal Viewer
- *   - Automatic API Key injection (X-API-Key header & ?api_key= query param)
+ *   - Open Access REST & Streaming (No API Key Required)
  */
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -19,30 +19,9 @@ document.addEventListener("DOMContentLoaded", () => {
   initEvidenceModal();
 });
 
-/* ── Helper: API Key & Authenticated Fetch ─────────────────── */
-function getApiKey() {
-  return (
-    window.FACILITY_API_KEY ||
-    document.querySelector('meta[name="api-key"]')?.getAttribute("content") ||
-    ""
-  );
-}
-
-function buildAuthUrl(url) {
-  const apiKey = getApiKey();
-  if (!apiKey || url.includes("api_key=")) return url;
-  const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}api_key=${encodeURIComponent(apiKey)}`;
-}
-
+/* ── Helper: Open Access API Fetch ─────────────────────────── */
 async function apiFetch(url, options = {}) {
-  const apiKey = getApiKey();
-  const headers = new Headers(options.headers || {});
-  if (apiKey) {
-    headers.set("X-API-Key", apiKey);
-  }
-  const finalUrl = buildAuthUrl(url);
-  return fetch(finalUrl, { ...options, headers });
+  return fetch(url, options);
 }
 
 /* ── 1. Live Clock ─────────────────────────────────────────── */
@@ -71,9 +50,9 @@ function initDynamicCameraSwitcher() {
   switcher.addEventListener("change", (e) => {
     const selected = e.target.value;
 
-    // Single fullscreen kiosk stream feed dengan query param api_key
+    // Single fullscreen kiosk stream feed
     if (streamFeed && selected) {
-      streamFeed.src = buildAuthUrl(`/video_feed/${selected}`);
+      streamFeed.src = `/video_feed/${selected}`;
       const hudCam = document.getElementById("hud-camera-id");
       if (hudCam) hudCam.textContent = selected.toUpperCase();
       pollActiveStreamStatus(selected);
@@ -361,7 +340,7 @@ function openEvidenceModal(ev) {
   if (!modal || !modalImg || !metaGrid) return;
 
   const fileName = ev.snapshot_path ? ev.snapshot_path.split(/[\\\\/]/).pop() : "";
-  const snapUrl = buildAuthUrl(`/snapshots/${ev.camera_id}/${fileName}`);
+  const snapUrl = `/snapshots/${ev.camera_id}/${fileName}`;
 
   modalTitle.textContent = `Insiden #${ev.id} — ${ev.event_type.toUpperCase()} [${ev.camera_id}]`;
 

@@ -52,10 +52,14 @@ class CameraConfig(BaseModel):
     capture: CaptureConfig = Field(default_factory=CaptureConfig)
     disk_guard: DiskGuardCameraConfig
     enabled_classes: Optional[List[str]] = Field(default=None, description="Filter kelas objek khusus kamera ini")
+    parking_classes: Optional[List[str]] = Field(default=None, description="Filter kelas kendaraan khusus modul parkir")
     parking_mode: Optional[str] = Field(default="slot", description="Mode parkir: 'slot' atau 'motorcycle_block'")
     block_capacity: Optional[int] = Field(default=30, ge=1, description="Kapasitas maksimum unit motor untuk block parking")
     debug_diagnostics: bool = Field(default=False, description="Flag diagnostik terstruktur per-kamera")
     debug_target_zone: Optional[str] = Field(default=None, description="Zone ID target diagnostik")
+    debug_snapshots: bool = Field(default=False, description="Flag penyimpanan snapshot AI mentah untuk diagnostik")
+    debug_snapshot_max_files: int = Field(default=300, ge=1, description="Batas file ring-buffer snapshot")
+    debug_snapshot_min_interval_s: float = Field(default=10.0, ge=0.0, description="Interval minimum antar snapshot kelas besar")
 
     class Config:
         json_schema_extra = {"sensitive_fields": ["rtsp_url"]}

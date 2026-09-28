@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import math
+import os
+import queue
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -37,6 +40,7 @@ class SlotState:
     exit_grace_sec: float = 2.0
     latch_occupied: bool = False
     latch_dwell_threshold_sec: float = 5.0
+    warmup_hits: int = 0
 
     @property
     def occupied(self) -> bool:
@@ -197,6 +201,13 @@ class SmartParkingTracker:
         debug_diagnostics: bool = False,
         debug_target_zone: Optional[str] = None,
         debug_log_path: str = "logs/s4_diagnostics.log",
+        debug_snapshots: bool = False,
+        debug_snapshot_max_files: int = 300,
+        debug_snapshot_min_interval_s: float = 10.0,
+        debug_snapshot_dir: str = "logs/snapshots",
+        acquisition_conf_thresh: float = 0.32,
+        retention_conf_thresh: float = 0.20,
+        wheel_contact_margin_px: float = 0.0,
     ) -> None:
         self._total_slots_override = total_slots
         self.dwell_threshold_sec = dwell_threshold_sec
@@ -205,9 +216,22 @@ class SmartParkingTracker:
         self.block_capacity = block_capacity
         self.stationary_dwell_sec = stationary_dwell_sec
         self._block_exclusion_x_1080p: Optional[int] = block_exclusion_x_1080p
+        self.acquisition_conf_thresh = float(acquisition_conf_thresh)
+        self.retention_conf_thresh = float(retention_conf_thresh)
+        self.wheel_contact_margin_px = float(wheel_contact_margin_px)
         self.debug_diagnostics = debug_diagnostics
         self.debug_target_zone = debug_target_zone
         self.debug_log_path = debug_log_path
+        self.debug_snapshots = debug_snapshots
+        self.debug_snapshot_max_files = max(1, int(debug_snapshot_max_files))
+        self.debug_snapshot_min_interval_s = max(0.0, float(debug_snapshot_min_interval_s))
+        self.debug_snapshot_dir = debug_snapshot_dir
+        self._snapshot_queue: Optional[queue.Queue] = None
+        self._snapshot_worker: Optional[threading.Thread] = None
+        self._snapshot_stop_event = threading.Event()
+        self._last_truck_snapshot_time: float = 0.0
+        self._existing_snapshot_files: List[Tuple[int, str, str]] = []
+        self._snapshot_lock = threading.Lock()
         self._debug_logger: Optional[Any] = None
         self._debug_logger_failed: bool = False
         self._last_diag_log_time: Dict[int, float] = {}
@@ -245,7 +269,7 @@ class SmartParkingTracker:
             log_file = Path(self.debug_log_path)
             log_file.parent.mkdir(parents=True, exist_ok=True)
 
-            logger_name = f"diagnostics_{self.debug_target_zone}"
+            logger_name = f"diagnostics_{self.debug_target_zone}_{abs(hash(str(log_file.resolve())))}"
             diag_logger = logging.getLogger(logger_name)
             diag_logger.setLevel(logging.INFO)
             diag_logger.propagate = False
@@ -292,6 +316,147 @@ class SmartParkingTracker:
                     )
                 except Exception:
                     pass
+
+    def _ensure_snapshot_worker(self) -> bool:
+        if not (self.debug_diagnostics and self.debug_snapshots and self.debug_target_zone):
+            return False
+        with self._snapshot_lock:
+            if self._snapshot_queue is not None:
+                return True
+            try:
+                snap_dir = os.path.abspath(self.debug_snapshot_dir)
+                os.makedirs(snap_dir, exist_ok=True)
+
+                self._snapshot_queue = queue.Queue(maxsize=20)
+
+                existing: List[Tuple[int, str, str]] = []
+                if os.path.exists(snap_dir):
+                    for fname in os.listdir(snap_dir):
+                        if fname.startswith("debug_s4_") and fname.endswith(".jpg"):
+                            parts = fname[:-4].split("_")
+                            if len(parts) >= 3:
+                                try:
+                                    ep = int(parts[2])
+                                    ev = parts[3] if len(parts) >= 4 else "unknown"
+                                    existing.append((ep, fname, ev))
+                                except ValueError:
+                                    pass
+                existing.sort(key=lambda x: x[0])
+                self._existing_snapshot_files = existing
+
+                self._snapshot_stop_event.clear()
+                self._snapshot_worker = threading.Thread(
+                    target=self._snapshot_worker_loop,
+                    name=f"snap_worker_{self.debug_target_zone}",
+                    daemon=True,
+                )
+                self._snapshot_worker.start()
+                return True
+            except Exception as exc:
+                if not self._has_logged_diag_error:
+                    self._has_logged_diag_error = True
+                    try:
+                        import logging
+                        logging.getLogger("engine.smart_parking").warning(
+                            f"Snapshot worker initialization failed: {exc}"
+                        )
+                    except Exception:
+                        pass
+                return False
+
+    def _snapshot_worker_loop(self) -> None:
+        while not self._snapshot_stop_event.is_set():
+            try:
+                item = self._snapshot_queue.get(timeout=0.5)
+            except Exception:
+                continue
+
+            if item is None:
+                break
+
+            filename, frame_bgr, epoch_ms, event_type = item
+            try:
+                snap_path = os.path.join(self.debug_snapshot_dir, filename)
+                cv2.imwrite(snap_path, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
+
+                with self._snapshot_lock:
+                    self._existing_snapshot_files.append((epoch_ms, filename, event_type))
+                    self._existing_snapshot_files.sort(key=lambda x: x[0])
+
+                    max_files = max(1, int(self.debug_snapshot_max_files))
+                    while len(self._existing_snapshot_files) > max_files:
+                        detect_files = [x for x in self._existing_snapshot_files if x[2] == "detect"]
+                        phase_files = [x for x in self._existing_snapshot_files if x[2] == "phase"]
+
+                        if len(detect_files) > 200:
+                            to_remove = detect_files[0]
+                            self._existing_snapshot_files.remove(to_remove)
+                        elif len(phase_files) > 100:
+                            to_remove = phase_files[0]
+                            self._existing_snapshot_files.remove(to_remove)
+                        else:
+                            to_remove = self._existing_snapshot_files.pop(0)
+
+                        del_path = os.path.join(self.debug_snapshot_dir, to_remove[1])
+                        try:
+                            if os.path.exists(del_path):
+                                os.remove(del_path)
+                        except Exception:
+                            pass
+            except Exception as exc:
+                if not self._has_logged_diag_error:
+                    self._has_logged_diag_error = True
+                    try:
+                        import logging
+                        logging.getLogger("engine.smart_parking").warning(
+                            f"Snapshot worker write exception: {exc}"
+                        )
+                    except Exception:
+                        pass
+            finally:
+                self._snapshot_queue.task_done()
+
+    def _trigger_snapshot(
+        self,
+        raw_frame: Optional[np.ndarray],
+        current_time: float,
+        event_type: str,
+    ) -> Optional[str]:
+        if not (self.debug_diagnostics and self.debug_snapshots and self.debug_target_zone):
+            return None
+        if raw_frame is None:
+            return None
+        if not self._ensure_snapshot_worker():
+            return "dropped"
+
+        epoch_ms = int(current_time * 1000)
+        filename = f"debug_s4_{epoch_ms}_{event_type}.jpg"
+        try:
+            self._snapshot_queue.put_nowait((filename, raw_frame.copy(), epoch_ms, event_type))
+            return filename
+        except queue.Full:
+            return "dropped"
+        except Exception:
+            return "dropped"
+
+    def close(self) -> None:
+        if hasattr(self, "_snapshot_stop_event") and self._snapshot_stop_event is not None:
+            self._snapshot_stop_event.set()
+        if hasattr(self, "_snapshot_queue") and self._snapshot_queue is not None:
+            try:
+                self._snapshot_queue.put_nowait(None)
+            except Exception:
+                pass
+        if hasattr(self, "_snapshot_worker") and self._snapshot_worker is not None and self._snapshot_worker.is_alive():
+            self._snapshot_worker.join(timeout=1.0)
+        if getattr(self, "_debug_logger", None) is not None:
+            try:
+                for h in list(self._debug_logger.handlers):
+                    h.flush()
+                    h.close()
+                    self._debug_logger.removeHandler(h)
+            except Exception:
+                pass
 
     @property
     def total_slots(self) -> int:
@@ -397,15 +562,23 @@ class SmartParkingTracker:
 
         x1, y1, x2, y2 = new_track.bbox
         cx = float((x1 + x2) / 2.0)
-        wheel_pt = (cx, float(y2))
-        lower_pt = (cx, float(y1 + (y2 - y1) * 0.75))
-        center_pt = (cx, float((y1 + y2) / 2.0))
+        bw = max(1.0, x2 - x1)
+        bh = max(1.0, y2 - y1)
+        wheel_center = (cx, float(y2))
+        wheel_inset = (cx, float(y2 - bh * 0.05))
+        wheel_lift = (cx, float(y2 - bh * 0.10))
+        wheel_left = (float(x1 + bw * 0.25), float(y2 - bh * 0.03))
+        wheel_right = (float(x2 - bw * 0.25), float(y2 - bh * 0.03))
 
-        if (
-            cv2.pointPolygonTest(pts_scaled, wheel_pt, True) >= -3.0
-            or cv2.pointPolygonTest(pts_scaled, lower_pt, True) >= -3.0
-            or cv2.pointPolygonTest(pts_scaled, center_pt, True) >= -3.0
-        ):
+        d_ground = max(
+            cv2.pointPolygonTest(pts_scaled, wheel_center, True),
+            cv2.pointPolygonTest(pts_scaled, wheel_inset, True),
+            cv2.pointPolygonTest(pts_scaled, wheel_lift, True),
+            cv2.pointPolygonTest(pts_scaled, wheel_left, True),
+            cv2.pointPolygonTest(pts_scaled, wheel_right, True),
+        )
+
+        if d_ground >= self.wheel_contact_margin_px:
             return True
         if state.last_bbox is not None:
             iou = bbox_iou(new_track.bbox, state.last_bbox)
@@ -590,6 +763,8 @@ class SmartParkingTracker:
         current_time: float,
         is_warmup: bool = False,
         frame_count: Optional[int] = None,
+        raw_ai_frame: Optional[np.ndarray] = None,
+        raw_detections: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
         if self.parking_mode == "motorcycle_block":
             return self._update_block_mode(
@@ -649,6 +824,59 @@ class SmartParkingTracker:
                 "bbox": slot_bbox,
             }
 
+        frame_snapshot_status: Optional[str] = None
+        frame_snapshot_triggered: bool = False
+
+        # Pemicu 2: deteksi mentah kelas truck/bus yang beririsan dengan debug_target_zone
+        if (
+            self.debug_diagnostics
+            and self.debug_snapshots
+            and self.debug_target_zone
+            and (self.debug_target_zone in slot_geometries)
+        ):
+            target_geom = slot_geometries[self.debug_target_zone]
+            t_pts = target_geom["pts_scaled"]
+            t_sbbox = target_geom["bbox"]
+
+            candidate_large_objs: List[Any] = []
+            if raw_detections is not None:
+                candidate_large_objs = [
+                    d for d in raw_detections
+                    if getattr(d, "class_label", None) in ("truck", "bus")
+                ]
+            else:
+                candidate_large_objs = [
+                    t for t in tracks
+                    if getattr(t, "class_label", None) in ("truck", "bus")
+                ]
+
+            for l_obj in candidate_large_objs:
+                bx1, by1, bx2, by2 = getattr(l_obj, "bbox")
+                bcx = float((bx1 + bx2) / 2.0)
+                bcy = float((by1 + by2) / 2.0)
+                b_wheel = (bcx, float(by2))
+                b_lower = (bcx, float(by1 + (by2 - by1) * 0.75))
+                b_center = (bcx, bcy)
+
+                d_w = cv2.pointPolygonTest(t_pts, b_wheel, True)
+                d_l = cv2.pointPolygonTest(t_pts, b_lower, True)
+                d_c = cv2.pointPolygonTest(t_pts, b_center, True)
+                det_d_max = max(d_w, d_l, d_c)
+
+                boxes_overlap = not (
+                    bx2 < t_sbbox[0]
+                    or bx1 > t_sbbox[2]
+                    or by2 < t_sbbox[1]
+                    or by1 > t_sbbox[3]
+                )
+                is_target_overlap = (-40.0 <= det_d_max <= 10.0) or boxes_overlap
+                if is_target_overlap:
+                    if (current_time - self._last_truck_snapshot_time) >= self.debug_snapshot_min_interval_s:
+                        self._last_truck_snapshot_time = current_time
+                        frame_snapshot_status = self._trigger_snapshot(raw_ai_frame, current_time, "detect")
+                        frame_snapshot_triggered = True
+                    break
+
         candidates: List[Tuple[float, str, TrackResult]] = []
 
         # Pembersihan berkala cache throttle diagnostik (>60s)
@@ -668,18 +896,39 @@ class SmartParkingTracker:
             slot_diag = geom["diag"]
             slot_bbox = geom["bbox"]
 
+            slot_target_classes = getattr(slot, "target_classes", None)
+            allowed_classes = set(slot_target_classes) if slot_target_classes else self.vehicle_classes
+
             for vt in vehicle_tracks:
+                if vt.class_label not in allowed_classes:
+                    continue
                 x1, y1, x2, y2 = vt.bbox
                 cx = float((x1 + x2) / 2.0)
                 cy = float((y1 + y2) / 2.0)
-                wheel_pt = (cx, float(y2))
-                lower_pt = (cx, float(y1 + (y2 - y1) * 0.75))
-                center_pt = (cx, cy)
+                bw = max(1.0, x2 - x1)
+                bh = max(1.0, y2 - y1)
 
-                d_wheel = cv2.pointPolygonTest(pts_scaled, wheel_pt, True)
+                # Ground Contact Points (bottom-center, tire stance, bumper vertical tolerance)
+                wheel_center = (cx, float(y2))
+                wheel_inset = (cx, float(y2 - bh * 0.05))
+                wheel_lift = (cx, float(y2 - bh * 0.10))
+                wheel_left = (float(x1 + bw * 0.25), float(y2 - bh * 0.03))
+                wheel_right = (float(x2 - bw * 0.25), float(y2 - bh * 0.03))
+
+                d_wheel = cv2.pointPolygonTest(pts_scaled, wheel_center, True)
+                d_wheel_inset = cv2.pointPolygonTest(pts_scaled, wheel_inset, True)
+                d_wheel_lift = cv2.pointPolygonTest(pts_scaled, wheel_lift, True)
+                d_wheel_left = cv2.pointPolygonTest(pts_scaled, wheel_left, True)
+                d_wheel_right = cv2.pointPolygonTest(pts_scaled, wheel_right, True)
+                d_ground = max(d_wheel, d_wheel_inset, d_wheel_lift, d_wheel_left, d_wheel_right)
+
+                # Legacy points kept strictly for passive diagnostic metrics
+                lower_pt = (cx, float(y1 + bh * 0.75))
+                center_pt = (cx, cy)
                 d_lower = cv2.pointPolygonTest(pts_scaled, lower_pt, True)
                 d_center = cv2.pointPolygonTest(pts_scaled, center_pt, True)
-                d_max = max(d_wheel, d_lower, d_center)
+                d_max = d_ground
+
                 iou_slot = bbox_iou(vt.bbox, slot_bbox)
 
                 iou_anchor = 0.0
@@ -687,7 +936,17 @@ class SmartParkingTracker:
                     iou_anchor = bbox_iou(vt.bbox, state.last_bbox)
                 anchor_threshold = 0.15 if state.latch_occupied else 0.25
 
-                passed_gate = (d_max >= -3.0 or iou_anchor >= anchor_threshold)
+                # Two-tier confidence gate:
+                # - Acquisition (slot VACANT): requires confidence >= acquisition_conf_thresh
+                # - Retention (slot OCCUPIED/LEAVING/ENTERING): requires confidence >= retention_conf_thresh or anchor IoU
+                is_vacant_slot = (state.phase == "VACANT")
+                if is_vacant_slot:
+                    conf_ok = (vt.confidence >= self.acquisition_conf_thresh)
+                    # Akuisisi slot kosong: titik tengah roda (wheel_center) WAJIB masuk poligon (d_wheel >= 0.0)
+                    passed_gate = conf_ok and (d_wheel >= 0.0) and (d_ground >= self.wheel_contact_margin_px)
+                else:
+                    conf_ok = (vt.confidence >= self.retention_conf_thresh)
+                    passed_gate = (conf_ok and d_ground >= self.wheel_contact_margin_px) or (iou_anchor >= anchor_threshold)
 
                 # Diagnostic logging pasif untuk target zone pada vehicle_tracks
                 if self.debug_diagnostics and s_id == self.debug_target_zone:
@@ -721,12 +980,21 @@ class SmartParkingTracker:
                                     continuity_bonus = 25.0 if (state.track_id == vt.track_id and state.phase == "OCCUPIED") else 0.0
                                     latch_bonus = 20.0 if state.latch_occupied else 0.0
                                     cand_score = round(
-                                        (d_max * 2.5) - (dist_norm * 30.0) + (iou_slot * 35.0) + (iou_anchor * 30.0) + continuity_bonus + latch_bonus,
+                                        (d_ground * 3.0) - (dist_norm * 30.0) + (iou_slot * 30.0) + (iou_anchor * 30.0) + continuity_bonus + latch_bonus,
                                         2
                                     )
 
                                 if not passed_gate:
-                                    reason_str = f"d_max_below_margin ({d_max:.2f} < -3.0)" if d_max < -3.0 else "anchor_mismatch"
+                                    if is_vacant_slot and vt.confidence < self.acquisition_conf_thresh:
+                                        reason_str = f"low_acquisition_conf ({vt.confidence:.2f} < {self.acquisition_conf_thresh:.2f})"
+                                    elif is_vacant_slot and d_wheel < 0.0:
+                                        reason_str = f"wheel_center_outside ({d_wheel:.2f} < 0.0)"
+                                    elif not conf_ok:
+                                        reason_str = f"low_retention_conf ({vt.confidence:.2f} < {self.retention_conf_thresh:.2f})"
+                                    elif d_ground < self.wheel_contact_margin_px:
+                                        reason_str = f"d_ground_below_margin ({d_ground:.2f} < {self.wheel_contact_margin_px:.1f})"
+                                    else:
+                                        reason_str = "anchor_mismatch"
                                 else:
                                     reason_str = "PASSED_SPATIAL_GATE"
 
@@ -740,11 +1008,12 @@ class SmartParkingTracker:
                                     "confidence": round(vt.confidence, 3),
                                     "bbox": [round(c, 1) for c in vt.bbox],
                                     "wheel_pt": [round(cx, 1), round(y2, 1)],
-                                    "lower_pt": [round(cx, 1), round(y1 + (y2 - y1) * 0.75, 1)],
+                                    "lower_pt": [round(cx, 1), round(y1 + bh * 0.75, 1)],
                                     "center_pt": [round(cx, 1), round(cy, 1)],
                                     "d_wheel": round(d_wheel, 2),
                                     "d_lower": round(d_lower, 2),
                                     "d_center": round(d_center, 2),
+                                    "d_ground": round(d_ground, 2),
                                     "d_max": round(d_max, 2),
                                     "iou_slot": round(iou_slot, 3),
                                     "iou_anchor": round(iou_anchor, 3),
@@ -756,6 +1025,7 @@ class SmartParkingTracker:
                                     "latch_occupied": state.latch_occupied,
                                     "is_warmup": is_warmup,
                                     "is_confirmed": vt.is_confirmed,
+                                    "snapshot": frame_snapshot_status,
                                 }
                                 self._emit_diagnostic_log(payload)
                     except Exception as diag_err:
@@ -775,7 +1045,7 @@ class SmartParkingTracker:
 
                     continuity_bonus = 25.0 if (state.track_id == vt.track_id and state.phase == "OCCUPIED") else 0.0
                     latch_bonus = 20.0 if state.latch_occupied else 0.0
-                    score = (d_max * 2.5) - (dist_norm * 30.0) + (iou_slot * 35.0) + (iou_anchor * 30.0) + continuity_bonus + latch_bonus
+                    score = (d_ground * 3.0) - (dist_norm * 30.0) + (iou_slot * 30.0) + (iou_anchor * 30.0) + continuity_bonus + latch_bonus
                     candidates.append((score, s_id, vt))
 
             # Evaluasi diagnostik pasif terpisah untuk track non-vehicle / unconfirmed (HANYA MEMBACA)
@@ -851,6 +1121,7 @@ class SmartParkingTracker:
                                     "latch_occupied": state.latch_occupied,
                                     "is_warmup": is_warmup,
                                     "is_confirmed": non_vt.is_confirmed,
+                                    "snapshot": frame_snapshot_status,
                                 }
                                 self._emit_diagnostic_log(payload)
                 except Exception as diag_err:
@@ -929,10 +1200,14 @@ class SmartParkingTracker:
 
                 if is_warmup:
                     # Evaluasi baseline okupansi slot pada masa cold-start:
-                    # Kendaraan yang terdeteksi di dalam poligon langsung diberi status OCCUPIED
+                    if matched_track.is_confirmed:
+                        state.warmup_hits += 1
                     state.phase = "OCCUPIED"
                     state.dwell_duration = max(state.dwell_duration, self.dwell_threshold_sec)
                     state.leaving_since = None
+                    # Latch hanya setelah minimal 10 konfirmasi warmup konsisten dan track confirmed
+                    if state.warmup_hits >= 10 and matched_track.is_confirmed:
+                        state.latch_occupied = True
                 else:
                     if state.phase == "VACANT":
                         # Fallback dwell (tanpa tripwire crossing terdeteksi)
@@ -950,13 +1225,21 @@ class SmartParkingTracker:
                     elif state.phase == "OCCUPIED":
                         state.leaving_since = None
 
-                # Latch occupancy jika kendaraan telah terparkir stabil melampaui ambang batas dwell
-                if state.phase == "OCCUPIED" and state.dwell_duration >= state.latch_dwell_threshold_sec:
-                    state.latch_occupied = True
+                    # Latch occupancy jika kendaraan telah terparkir stabil melampaui ambang batas dwell
+                    if state.phase == "OCCUPIED" and state.dwell_duration >= state.latch_dwell_threshold_sec:
+                        state.latch_occupied = True
 
             else:
                 # Tidak ada kendaraan terdeteksi di dalam poligon
-                if state.track_id is not None and state.track_id in assigned_track_ids and not state.latch_occupied:
+                if is_warmup and not state.latch_occupied:
+                    # Selama masa warmup, jika tidak terkonfirmasi lagi dan belum latched, reset ke VACANT
+                    state.phase = "VACANT"
+                    state.track_id = None
+                    state.vehicle_class = None
+                    state.first_seen_time = None
+                    state.dwell_duration = 0.0
+                    state.warmup_hits = 0
+                elif state.track_id is not None and state.track_id in assigned_track_ids and not state.latch_occupied:
                     # Mobil ini telah terbukti terparkir di slot lain secara eksklusif (Exclusive Assignment)
                     # Segera bebaskan slot ini kembali ke status VACANT hanya jika slot BELUM latched (belum stabil)
                     state.phase = "VACANT"
@@ -987,6 +1270,19 @@ class SmartParkingTracker:
                         # Mulai atau lanjutkan timer poligon kosong
                         if state.polygon_clear_since is None:
                             state.polygon_clear_since = current_time
+                        elif not is_warmup and state.latch_occupied and (current_time - state.polygon_clear_since) >= 4.0:
+                            # Auto-reset: jika slot ter-latch tetapi poligon bersih secara kontinu >= 4.0 detik pasca-warmup,
+                            # paksa reset ke VACANT untuk mencegah false latch berkepanjangan akibat glitch sesaat.
+                            state.latch_occupied = False
+                            state.phase = "VACANT"
+                            state.track_id = None
+                            state.vehicle_class = None
+                            state.first_seen_time = None
+                            state.dwell_duration = 0.0
+                            state.leaving_since = None
+                            state.polygon_clear_since = None
+                            state.tripwire_crossed_in_time = None
+                            state.warmup_hits = 0
                         elif (current_time - state.polygon_clear_since) >= confirm_threshold:
                             state.phase = "LEAVING"
                             state.leaving_since = current_time
@@ -1007,6 +1303,7 @@ class SmartParkingTracker:
                         state.dwell_duration = 0.0
                         state.leaving_since = None
                         state.tripwire_crossed_in_time = None
+                        state.warmup_hits = 0
                 elif state.phase == "VACANT":
                     if state.last_seen_time > 0 and (current_time - state.last_seen_time) > 2.0:
                         state.track_id = None
@@ -1022,6 +1319,10 @@ class SmartParkingTracker:
                         prev_p = self._prev_slot_phases[slot_id]
                         if state.phase != prev_p:
                             self._prev_slot_phases[slot_id] = state.phase
+                            if self.debug_snapshots:
+                                if not frame_snapshot_triggered:
+                                    frame_snapshot_status = self._trigger_snapshot(raw_ai_frame, current_time, "phase")
+                                    frame_snapshot_triggered = True
                             from datetime import datetime, timezone
                             iso_now = datetime.fromtimestamp(current_time, tz=timezone.utc).isoformat()
                             payload = {
@@ -1037,6 +1338,7 @@ class SmartParkingTracker:
                                 "dwell": round(state.dwell_duration, 2),
                                 "latch_occupied": state.latch_occupied,
                                 "is_warmup": is_warmup,
+                                "snapshot": frame_snapshot_status,
                             }
                             self._emit_diagnostic_log(payload)
                 except Exception as diag_err:

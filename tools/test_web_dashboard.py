@@ -21,7 +21,7 @@ from web.buffer import MultiCameraBuffer
 
 def test_dashboard_kiosk_mode():
     print("==================================================================")
-    print("  FACILITY MANAGEMENT — WEB DASHBOARD 100VH KIOSK MODE VALIDATION")
+    print("  FACILITY MANAGEMENT - WEB DASHBOARD 100VH KIOSK MODE VALIDATION")
     print("==================================================================")
 
     # 1. Setup minimal app
@@ -41,7 +41,7 @@ def test_dashboard_kiosk_mode():
     assert "stream-feed" in resp.text
     assert "main-viewport" in resp.text
     assert "camera-hud" in resp.text
-    print("  ✓ GET / rendered valid 100vh Kiosk HTML with single video stream focus.")
+    print("  [PASS] GET / rendered valid 100vh Kiosk HTML with single video stream focus.")
 
     # 3. Test GET /static/css/dashboard.css
     print("\n[2/5] Testing GET /static/css/dashboard.css...")
@@ -49,7 +49,7 @@ def test_dashboard_kiosk_mode():
     assert resp_css.status_code == 200, f"Expected 200, got {resp_css.status_code}"
     assert "text/css" in resp_css.headers.get("content-type", "")
     css_text = resp_css.text
-    print("  ✓ dashboard.css successfully served via FastAPI static mount.")
+    print("  [PASS] dashboard.css successfully served via FastAPI static mount.")
 
     # 4. Validate Viewport Lock and 100vh Kiosk CSS Rules
     print("\n[3/5] Validating 100vh Viewport Lock & Video Stream Focus Rules...")
@@ -65,31 +65,25 @@ def test_dashboard_kiosk_mode():
     ]
     for rule in kiosk_rules:
         assert rule in css_text, f"Kiosk CSS rule missing: {rule}"
-    print("  ✓ 100vh viewport lock, zero scrollbar, and object-fit: contain verified.")
+    print("  [PASS] 100vh viewport lock, zero scrollbar, and object-fit: contain verified.")
 
     # 5. Test Backward Compatibility with /static/css/style.css
     print("\n[4/5] Testing /static/css/style.css backward-compatibility forwarder...")
     resp_old_css = client.get("/static/css/style.css")
     assert resp_old_css.status_code == 200
     assert "dashboard.css" in resp_old_css.text
-    print("  ✓ style.css properly forwards to dashboard.css.")
+    print("  [PASS] style.css properly forwards to dashboard.css.")
 
-    # 6. Test Core API Endpoints
-    print("\n[5/5] Testing Core Web API Endpoints (/api/cameras, /api/status/cam_01)...")
-    # 5a. Akses tanpa API key wajib 401
-    resp_unauth = client.get("/api/cameras")
-    assert resp_unauth.status_code == 401, f"Expected 401 unauthenticated, got {resp_unauth.status_code}"
-
-    # 5b. Akses terautentikasi (header / query param)
-    api_key = "facility-royal-2026"
-    resp_cams = client.get("/api/cameras", headers={"X-API-Key": api_key})
-    assert resp_cams.status_code == 200
+    # 6. Test Core API Endpoints (Open Access)
+    print("\n[5/5] Testing Core Web API Endpoints (/api/cameras, /api/status/cam_01 - Open Access)...")
+    resp_cams = client.get("/api/cameras")
+    assert resp_cams.status_code == 200, f"Expected 200 OK, got {resp_cams.status_code}"
     assert isinstance(resp_cams.json(), list)
 
-    resp_status = client.get(f"/api/status/cam_01?api_key={api_key}")
-    assert resp_status.status_code == 200
+    resp_status = client.get("/api/status/cam_01")
+    assert resp_status.status_code == 200, f"Expected 200 OK, got {resp_status.status_code}"
     assert resp_status.json().get("camera_id") == "cam_01"
-    print("  [PASS] API endpoints protected with API Key (401 unauthenticated, 200 authenticated).")
+    print("  [PASS] API endpoints successfully open access (200 OK without API Key).")
 
 
     print("\n==================================================================")
