@@ -194,6 +194,9 @@ class SmartParkingTracker:
         block_capacity: int = 30,
         stationary_dwell_sec: float = 0.0,
         block_exclusion_x_1080p: Optional[int] = None,
+        debug_diagnostics: bool = False,
+        debug_target_zone: Optional[str] = None,
+        debug_log_path: str = "logs/s4_diagnostics.log",
     ) -> None:
         self._total_slots_override = total_slots
         self.dwell_threshold_sec = dwell_threshold_sec
@@ -202,6 +205,14 @@ class SmartParkingTracker:
         self.block_capacity = block_capacity
         self.stationary_dwell_sec = stationary_dwell_sec
         self._block_exclusion_x_1080p: Optional[int] = block_exclusion_x_1080p
+        self.debug_diagnostics = debug_diagnostics
+        self.debug_target_zone = debug_target_zone
+        self.debug_log_path = debug_log_path
+        self._debug_logger: Optional[Any] = None
+        self._debug_logger_failed: bool = False
+        self._last_diag_log_time: Dict[int, float] = {}
+        self._prev_slot_phases: Dict[str, str] = {}
+        self._has_logged_diag_error: bool = False
         self._last_gate_in: int = 0
         self._last_gate_out: int = 0
         self._zone_dwell_map: Dict[int, float] = {}
@@ -213,9 +224,74 @@ class SmartParkingTracker:
         self._candidate_occupied: Optional[int] = None
         self._candidate_occupied_since: float = 0.0
         self.slot_states: Dict[str, SlotState] = {}
+        self._last_candidates: List[Tuple[float, str, int]] = []
+        self._last_assigned_slots: Dict[str, int] = {}
         self.gate_in_count: int = 0
         self.gate_out_count: int = 0
         self.tripwire_flash: Dict[str, float] = {}
+
+    def _get_debug_logger(self) -> Optional[Any]:
+        if not self.debug_diagnostics or not self.debug_target_zone:
+            return None
+        if self._debug_logger is not None:
+            return self._debug_logger
+        if self._debug_logger_failed:
+            return None
+        try:
+            import logging
+            from logging.handlers import RotatingFileHandler
+            from pathlib import Path
+
+            log_file = Path(self.debug_log_path)
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+
+            logger_name = f"diagnostics_{self.debug_target_zone}"
+            diag_logger = logging.getLogger(logger_name)
+            diag_logger.setLevel(logging.INFO)
+            diag_logger.propagate = False
+
+            if not diag_logger.handlers:
+                rfh = RotatingFileHandler(
+                    str(log_file),
+                    maxBytes=5 * 1024 * 1024,
+                    backupCount=10,
+                    encoding="utf-8",
+                )
+                rfh.setFormatter(logging.Formatter("%(message)s"))
+                diag_logger.addHandler(rfh)
+
+            self._debug_logger = diag_logger
+            return self._debug_logger
+        except Exception as exc:
+            self._debug_logger_failed = True
+            if not self._has_logged_diag_error:
+                self._has_logged_diag_error = True
+                try:
+                    import logging
+                    logging.getLogger("engine.smart_parking").warning(
+                        f"Diagnostic logger initialization failed, disabling retries: {exc}"
+                    )
+                except Exception:
+                    pass
+            return None
+
+    def _emit_diagnostic_log(self, payload: Dict[str, Any]) -> None:
+        try:
+            diag_logger = self._get_debug_logger()
+            if diag_logger is None:
+                return
+            import json
+            diag_logger.info(json.dumps(payload, separators=(",", ":")))
+        except Exception as exc:
+            if not self._has_logged_diag_error:
+                self._has_logged_diag_error = True
+                try:
+                    import logging
+                    logging.getLogger("engine.smart_parking").warning(
+                        f"Diagnostic logging exception swallowed: {exc}"
+                    )
+                except Exception:
+                    pass
 
     @property
     def total_slots(self) -> int:
@@ -513,6 +589,7 @@ class SmartParkingTracker:
         scale_y: float,
         current_time: float,
         is_warmup: bool = False,
+        frame_count: Optional[int] = None,
     ) -> Dict[str, Any]:
         if self.parking_mode == "motorcycle_block":
             return self._update_block_mode(
@@ -574,6 +651,13 @@ class SmartParkingTracker:
 
         candidates: List[Tuple[float, str, TrackResult]] = []
 
+        # Pembersihan berkala cache throttle diagnostik (>60s)
+        if self._last_diag_log_time and len(self._last_diag_log_time) > 20:
+            cutoff = current_time - 60.0
+            self._last_diag_log_time = {
+                tid: t for tid, t in self._last_diag_log_time.items() if t >= cutoff
+            }
+
         for slot in active_slots:
             s_id = slot.zone_id
             state = self.slot_states[s_id]
@@ -602,7 +686,90 @@ class SmartParkingTracker:
                 if state.phase == "OCCUPIED" and state.last_bbox is not None:
                     iou_anchor = bbox_iou(vt.bbox, state.last_bbox)
                 anchor_threshold = 0.15 if state.latch_occupied else 0.25
-                if d_max >= -3.0 or iou_anchor >= anchor_threshold:
+
+                passed_gate = (d_max >= -3.0 or iou_anchor >= anchor_threshold)
+
+                # Diagnostic logging pasif untuk target zone pada vehicle_tracks
+                if self.debug_diagnostics and s_id == self.debug_target_zone:
+                    try:
+                        boxes_overlap = not (
+                            vt.bbox[2] < slot_bbox[0]
+                            or vt.bbox[0] > slot_bbox[2]
+                            or vt.bbox[3] < slot_bbox[1]
+                            or vt.bbox[1] > slot_bbox[3]
+                        )
+                        is_spatial_trigger = (-40.0 <= d_max <= 10.0) or boxes_overlap
+
+                        if is_spatial_trigger:
+                            # Throttle: 15s untuk ACCEPTED pemilik slot stabil (OCCUPIED), 0.5s untuk lainnya
+                            is_stable_occupied_owner = (
+                                passed_gate
+                                and state.track_id == vt.track_id
+                                and state.phase == "OCCUPIED"
+                            )
+                            throttle_sec = 15.0 if is_stable_occupied_owner else 0.5
+
+                            last_log = self._last_diag_log_time.get(vt.track_id, 0.0)
+                            if (current_time - last_log) >= throttle_sec:
+                                self._last_diag_log_time[vt.track_id] = current_time
+                                from datetime import datetime, timezone
+                                iso_now = datetime.fromtimestamp(current_time, tz=timezone.utc).isoformat()
+                                cand_score = None
+                                if passed_gate:
+                                    dist_to_center = math.hypot(cx - slot_cx, cy - slot_cy)
+                                    dist_norm = dist_to_center / slot_diag
+                                    continuity_bonus = 25.0 if (state.track_id == vt.track_id and state.phase == "OCCUPIED") else 0.0
+                                    latch_bonus = 20.0 if state.latch_occupied else 0.0
+                                    cand_score = round(
+                                        (d_max * 2.5) - (dist_norm * 30.0) + (iou_slot * 35.0) + (iou_anchor * 30.0) + continuity_bonus + latch_bonus,
+                                        2
+                                    )
+
+                                if not passed_gate:
+                                    reason_str = f"d_max_below_margin ({d_max:.2f} < -3.0)" if d_max < -3.0 else "anchor_mismatch"
+                                else:
+                                    reason_str = "PASSED_SPATIAL_GATE"
+
+                                payload = {
+                                    "timestamp": round(current_time, 3),
+                                    "iso_time": iso_now,
+                                    "processed_count": frame_count,
+                                    "zone_id": s_id,
+                                    "track_id": vt.track_id,
+                                    "class_label": vt.class_label,
+                                    "confidence": round(vt.confidence, 3),
+                                    "bbox": [round(c, 1) for c in vt.bbox],
+                                    "wheel_pt": [round(cx, 1), round(y2, 1)],
+                                    "lower_pt": [round(cx, 1), round(y1 + (y2 - y1) * 0.75, 1)],
+                                    "center_pt": [round(cx, 1), round(cy, 1)],
+                                    "d_wheel": round(d_wheel, 2),
+                                    "d_lower": round(d_lower, 2),
+                                    "d_center": round(d_center, 2),
+                                    "d_max": round(d_max, 2),
+                                    "iou_slot": round(iou_slot, 3),
+                                    "iou_anchor": round(iou_anchor, 3),
+                                    "score": cand_score,
+                                    "candidate_status": "ACCEPTED" if passed_gate else "REJECTED",
+                                    "reason": reason_str,
+                                    "phase": state.phase,
+                                    "dwell": round(state.dwell_duration, 2),
+                                    "latch_occupied": state.latch_occupied,
+                                    "is_warmup": is_warmup,
+                                    "is_confirmed": vt.is_confirmed,
+                                }
+                                self._emit_diagnostic_log(payload)
+                    except Exception as diag_err:
+                        if not self._has_logged_diag_error:
+                            self._has_logged_diag_error = True
+                            try:
+                                import logging
+                                logging.getLogger("engine.smart_parking").warning(
+                                    f"Diagnostic logging exception swallowed: {diag_err}"
+                                )
+                            except Exception:
+                                pass
+
+                if passed_gate:
                     dist_to_center = math.hypot(cx - slot_cx, cy - slot_cy)
                     dist_norm = dist_to_center / slot_diag
 
@@ -610,7 +777,95 @@ class SmartParkingTracker:
                     latch_bonus = 20.0 if state.latch_occupied else 0.0
                     score = (d_max * 2.5) - (dist_norm * 30.0) + (iou_slot * 35.0) + (iou_anchor * 30.0) + continuity_bonus + latch_bonus
                     candidates.append((score, s_id, vt))
+
+            # Evaluasi diagnostik pasif terpisah untuk track non-vehicle / unconfirmed (HANYA MEMBACA)
+            if self.debug_diagnostics and s_id == self.debug_target_zone:
+                try:
+                    vehicle_track_ids = {t.track_id for t in vehicle_tracks}
+                    for non_vt in tracks:
+                        if non_vt.track_id in vehicle_track_ids:
+                            continue
+
+                        nx1, ny1, nx2, ny2 = non_vt.bbox
+                        ncx = float((nx1 + nx2) / 2.0)
+                        ncy = float((ny1 + ny2) / 2.0)
+                        n_wheel_pt = (ncx, float(ny2))
+                        n_lower_pt = (ncx, float(ny1 + (ny2 - ny1) * 0.75))
+                        n_center_pt = (ncx, ncy)
+
+                        n_d_wheel = cv2.pointPolygonTest(pts_scaled, n_wheel_pt, True)
+                        n_d_lower = cv2.pointPolygonTest(pts_scaled, n_lower_pt, True)
+                        n_d_center = cv2.pointPolygonTest(pts_scaled, n_center_pt, True)
+                        n_d_max = max(n_d_wheel, n_d_lower, n_d_center)
+                        n_iou_slot = bbox_iou(non_vt.bbox, slot_bbox)
+
+                        boxes_overlap = not (
+                            non_vt.bbox[2] < slot_bbox[0]
+                            or non_vt.bbox[0] > slot_bbox[2]
+                            or non_vt.bbox[3] < slot_bbox[1]
+                            or non_vt.bbox[1] > slot_bbox[3]
+                        )
+                        is_spatial_trigger = (-40.0 <= n_d_max <= 10.0) or boxes_overlap
+
+                        if is_spatial_trigger:
+                            last_log = self._last_diag_log_time.get(non_vt.track_id, 0.0)
+                            if (current_time - last_log) >= 0.5:
+                                self._last_diag_log_time[non_vt.track_id] = current_time
+                                from datetime import datetime, timezone
+                                iso_now = datetime.fromtimestamp(current_time, tz=timezone.utc).isoformat()
+
+                                if non_vt.class_label not in self.vehicle_classes:
+                                    reason_str = f"unsupported_class ({non_vt.class_label})"
+                                elif not (non_vt.is_confirmed or is_warmup):
+                                    hits_val = getattr(non_vt, "hits", None)
+                                    if hits_val is not None:
+                                        reason_str = f"unconfirmed_track (hits={hits_val}, is_confirmed={non_vt.is_confirmed})"
+                                    else:
+                                        reason_str = f"unconfirmed_track (is_confirmed={non_vt.is_confirmed})"
+                                else:
+                                    reason_str = f"d_max_below_margin ({n_d_max:.2f} < -3.0)"
+
+                                payload = {
+                                    "timestamp": round(current_time, 3),
+                                    "iso_time": iso_now,
+                                    "processed_count": frame_count,
+                                    "zone_id": s_id,
+                                    "track_id": non_vt.track_id,
+                                    "class_label": non_vt.class_label,
+                                    "confidence": round(non_vt.confidence, 3),
+                                    "bbox": [round(c, 1) for c in non_vt.bbox],
+                                    "wheel_pt": [round(ncx, 1), round(ny2, 1)],
+                                    "lower_pt": [round(ncx, 1), round(ny1 + (ny2 - ny1) * 0.75, 1)],
+                                    "center_pt": [round(ncx, 1), round(ncy, 1)],
+                                    "d_wheel": round(n_d_wheel, 2),
+                                    "d_lower": round(n_d_lower, 2),
+                                    "d_center": round(n_d_center, 2),
+                                    "d_max": round(n_d_max, 2),
+                                    "iou_slot": round(n_iou_slot, 3),
+                                    "iou_anchor": 0.0,
+                                    "score": None,
+                                    "candidate_status": "REJECTED",
+                                    "reason": reason_str,
+                                    "phase": state.phase,
+                                    "dwell": round(state.dwell_duration, 2),
+                                    "latch_occupied": state.latch_occupied,
+                                    "is_warmup": is_warmup,
+                                    "is_confirmed": non_vt.is_confirmed,
+                                }
+                                self._emit_diagnostic_log(payload)
+                except Exception as diag_err:
+                    if not self._has_logged_diag_error:
+                        self._has_logged_diag_error = True
+                        try:
+                            import logging
+                            logging.getLogger("engine.smart_parking").warning(
+                                f"Diagnostic non-vehicle tracking exception swallowed: {diag_err}"
+                            )
+                        except Exception:
+                            pass
         candidates.sort(key=lambda c: c[0], reverse=True)
+        if self.debug_diagnostics:
+            self._last_candidates = [(round(c[0], 2), c[1], c[2].track_id) for c in candidates]
 
         assigned_slot_to_track: Dict[str, TrackResult] = {}
         assigned_track_ids: Set[int] = set()
@@ -619,6 +874,9 @@ class SmartParkingTracker:
             if s_id not in assigned_slot_to_track and vt.track_id not in assigned_track_ids:
                 assigned_slot_to_track[s_id] = vt
                 assigned_track_ids.add(vt.track_id)
+
+        if self.debug_diagnostics:
+            self._last_assigned_slots = {k: v.track_id for k, v in assigned_slot_to_track.items()}
 
         # ── State Transitions Tiap Slot ────────────────────────────────────────
         for slot in active_slots:
@@ -755,6 +1013,42 @@ class SmartParkingTracker:
                         state.vehicle_class = None
                         state.first_seen_time = None
                         state.dwell_duration = 0.0
+
+            if self.debug_diagnostics and slot_id == self.debug_target_zone:
+                try:
+                    if slot_id not in self._prev_slot_phases:
+                        self._prev_slot_phases[slot_id] = state.phase
+                    else:
+                        prev_p = self._prev_slot_phases[slot_id]
+                        if state.phase != prev_p:
+                            self._prev_slot_phases[slot_id] = state.phase
+                            from datetime import datetime, timezone
+                            iso_now = datetime.fromtimestamp(current_time, tz=timezone.utc).isoformat()
+                            payload = {
+                                "timestamp": round(current_time, 3),
+                                "iso_time": iso_now,
+                                "processed_count": frame_count,
+                                "zone_id": slot_id,
+                                "event": "PHASE_TRANSITION",
+                                "previous_phase": prev_p,
+                                "phase": state.phase,
+                                "track_id": state.track_id,
+                                "vehicle_class": state.vehicle_class,
+                                "dwell": round(state.dwell_duration, 2),
+                                "latch_occupied": state.latch_occupied,
+                                "is_warmup": is_warmup,
+                            }
+                            self._emit_diagnostic_log(payload)
+                except Exception as diag_err:
+                    if not self._has_logged_diag_error:
+                        self._has_logged_diag_error = True
+                        try:
+                            import logging
+                            logging.getLogger("engine.smart_parking").warning(
+                                f"Diagnostic phase transition logging exception swallowed: {diag_err}"
+                            )
+                        except Exception:
+                            pass
 
         occupied_count = sum(1 for s in self.slot_states.values() if s.phase == "OCCUPIED")
         available_count = max(0, total_capacity - occupied_count)

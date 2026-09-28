@@ -80,6 +80,9 @@ class CameraOrchestrator(threading.Thread):
         self.initial_warmup_frames: int = 50 if _is_block else initial_warmup_frames
         self._quiescent_scan_interval: float = 3.0 if _is_block else quiescent_scan_interval
 
+        _debug_diag = bool(getattr(self.camera_config, "debug_diagnostics", False))
+        _debug_zone = getattr(self.camera_config, "debug_target_zone", None)
+
         self.parking_tracker = parking_tracker or SmartParkingTracker(
             dwell_threshold_sec=10.0,
             vehicle_classes=parking_classes,
@@ -87,6 +90,8 @@ class CameraOrchestrator(threading.Thread):
             block_capacity=_block_capacity,
             stationary_dwell_sec=_stationary_dwell,
             block_exclusion_x_1080p=720 if _is_block else None,
+            debug_diagnostics=_debug_diag,
+            debug_target_zone=_debug_zone,
         )
         self.motion_gate = motion_gate or MotionGate(
             pixel_threshold=25,
@@ -149,6 +154,7 @@ class CameraOrchestrator(threading.Thread):
             scale_y=scale_y,
             current_time=timestamp,
             is_warmup=is_warmup,
+            frame_count=getattr(self, "processed_count", None),
         )
 
         display_fps = fps if fps is not None else getattr(self, "fps", 20.0)

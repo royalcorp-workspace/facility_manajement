@@ -19,5 +19,7 @@
     "snapshot_dir": "cameras/cam_01/snapshots",
     "max_size_gb": 2.0,
     "purge_oldest_pct": 20.0
-  }
+  },
+  "debug_diagnostics": false,
+  "debug_target_zone": "zone_04"
 }

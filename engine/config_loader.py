@@ -54,6 +54,8 @@ class CameraConfig(BaseModel):
     enabled_classes: Optional[List[str]] = Field(default=None, description="Filter kelas objek khusus kamera ini")
     parking_mode: Optional[str] = Field(default="slot", description="Mode parkir: 'slot' atau 'motorcycle_block'")
     block_capacity: Optional[int] = Field(default=30, ge=1, description="Kapasitas maksimum unit motor untuk block parking")
+    debug_diagnostics: bool = Field(default=False, description="Flag diagnostik terstruktur per-kamera")
+    debug_target_zone: Optional[str] = Field(default=None, description="Zone ID target diagnostik")
 
     class Config:
         json_schema_extra = {"sensitive_fields": ["rtsp_url"]}
