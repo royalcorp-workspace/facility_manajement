@@ -41,6 +41,7 @@ class SlotState:
     latch_occupied: bool = False
     latch_dwell_threshold_sec: float = 5.0
     warmup_hits: int = 0
+    is_warmup_latch: bool = False
 
     @property
     def occupied(self) -> bool:
@@ -208,6 +209,8 @@ class SmartParkingTracker:
         acquisition_conf_thresh: float = 0.32,
         retention_conf_thresh: float = 0.20,
         wheel_contact_margin_px: float = 0.0,
+        corridor_obstruction_dwell_sec: float = 60.0,
+        corridor_shift_threshold_px: float = 15.0,
     ) -> None:
         self._total_slots_override = total_slots
         self.dwell_threshold_sec = dwell_threshold_sec
@@ -253,6 +256,9 @@ class SmartParkingTracker:
         self.gate_in_count: int = 0
         self.gate_out_count: int = 0
         self.tripwire_flash: Dict[str, float] = {}
+        self.corridor_obstruction_dwell_sec: float = float(corridor_obstruction_dwell_sec)
+        self.corridor_shift_threshold_px: float = float(corridor_shift_threshold_px)
+        self._corridor_vehicles: Dict[int, Dict[str, Any]] = {}
 
     def _get_debug_logger(self) -> Optional[Any]:
         if not self.debug_diagnostics or not self.debug_target_zone:
@@ -476,6 +482,23 @@ class SmartParkingTracker:
     def available_slots(self) -> int:
         return max(0, self.total_slots - self.occupied_slots)
 
+    @property
+    def has_obstruction(self) -> bool:
+        return any(v.get("is_obstruction", False) for v in self._corridor_vehicles.values())
+
+    @property
+    def active_obstructions(self) -> List[Dict[str, Any]]:
+        return [
+            {
+                "track_id": tid,
+                "bbox": v["bbox"],
+                "dwell_sec": round(v["dwell_duration"], 1),
+                "class_label": v.get("class_label", "car"),
+            }
+            for tid, v in self._corridor_vehicles.items()
+            if v.get("is_obstruction", False)
+        ]
+
     def apply_tripwire_signal(
         self,
         slot_id: str,
@@ -564,18 +587,18 @@ class SmartParkingTracker:
         cx = float((x1 + x2) / 2.0)
         bw = max(1.0, x2 - x1)
         bh = max(1.0, y2 - y1)
-        wheel_center = (cx, float(y2))
-        wheel_inset = (cx, float(y2 - bh * 0.05))
-        wheel_lift = (cx, float(y2 - bh * 0.10))
-        wheel_left = (float(x1 + bw * 0.25), float(y2 - bh * 0.03))
-        wheel_right = (float(x2 - bw * 0.25), float(y2 - bh * 0.03))
+        p_center = (cx, float(y2))
+        p_inset = (cx, float(y2 - bh * 0.05))
+        p_left = (float(x1 + bw * 0.22), float(y2 - bh * 0.04))
+        p_right = (float(x2 - bw * 0.22), float(y2 - bh * 0.04))
+        p_axle = (cx, float(y2 - bh * 0.12))
 
         d_ground = max(
-            cv2.pointPolygonTest(pts_scaled, wheel_center, True),
-            cv2.pointPolygonTest(pts_scaled, wheel_inset, True),
-            cv2.pointPolygonTest(pts_scaled, wheel_lift, True),
-            cv2.pointPolygonTest(pts_scaled, wheel_left, True),
-            cv2.pointPolygonTest(pts_scaled, wheel_right, True),
+            cv2.pointPolygonTest(pts_scaled, p_center, True),
+            cv2.pointPolygonTest(pts_scaled, p_inset, True),
+            cv2.pointPolygonTest(pts_scaled, p_left, True),
+            cv2.pointPolygonTest(pts_scaled, p_right, True),
+            cv2.pointPolygonTest(pts_scaled, p_axle, True),
         )
 
         if d_ground >= self.wheel_contact_margin_px:
@@ -908,25 +931,28 @@ class SmartParkingTracker:
                 bw = max(1.0, x2 - x1)
                 bh = max(1.0, y2 - y1)
 
-                # Ground Contact Points (bottom-center, tire stance, bumper vertical tolerance)
-                wheel_center = (cx, float(y2))
-                wheel_inset = (cx, float(y2 - bh * 0.05))
-                wheel_lift = (cx, float(y2 - bh * 0.10))
-                wheel_left = (float(x1 + bw * 0.25), float(y2 - bh * 0.03))
-                wheel_right = (float(x2 - bw * 0.25), float(y2 - bh * 0.03))
+                # 5-Point Weighted Stance Probe Architecture:
+                # 1. p_center: bottom-center (bumper / axle center line)
+                # 2. p_inset: inset slight vertical margin (front/rear overhang clearance)
+                # 3. p_left: left tire stance contact
+                # 4. p_right: right tire stance contact
+                # 5. p_axle: deep axle center contact (chassis center)
+                p_center = (cx, float(y2))
+                p_inset = (cx, float(y2 - bh * 0.05))
+                p_left = (float(x1 + bw * 0.22), float(y2 - bh * 0.04))
+                p_right = (float(x2 - bw * 0.22), float(y2 - bh * 0.04))
+                p_axle = (cx, float(y2 - bh * 0.12))
 
-                d_wheel = cv2.pointPolygonTest(pts_scaled, wheel_center, True)
-                d_wheel_inset = cv2.pointPolygonTest(pts_scaled, wheel_inset, True)
-                d_wheel_lift = cv2.pointPolygonTest(pts_scaled, wheel_lift, True)
-                d_wheel_left = cv2.pointPolygonTest(pts_scaled, wheel_left, True)
-                d_wheel_right = cv2.pointPolygonTest(pts_scaled, wheel_right, True)
-                d_ground = max(d_wheel, d_wheel_inset, d_wheel_lift, d_wheel_left, d_wheel_right)
+                d_center = cv2.pointPolygonTest(pts_scaled, p_center, True)
+                d_inset = cv2.pointPolygonTest(pts_scaled, p_inset, True)
+                d_left = cv2.pointPolygonTest(pts_scaled, p_left, True)
+                d_right = cv2.pointPolygonTest(pts_scaled, p_right, True)
+                d_axle = cv2.pointPolygonTest(pts_scaled, p_axle, True)
 
-                # Legacy points kept strictly for passive diagnostic metrics
-                lower_pt = (cx, float(y1 + bh * 0.75))
-                center_pt = (cx, cy)
-                d_lower = cv2.pointPolygonTest(pts_scaled, lower_pt, True)
-                d_center = cv2.pointPolygonTest(pts_scaled, center_pt, True)
+                stance_probes = [d_center, d_inset, d_left, d_right, d_axle]
+                d_ground = max(stance_probes)
+                d_wheel = d_center
+                d_lower = d_axle
                 d_max = d_ground
 
                 iou_slot = bbox_iou(vt.bbox, slot_bbox)
@@ -936,14 +962,20 @@ class SmartParkingTracker:
                     iou_anchor = bbox_iou(vt.bbox, state.last_bbox)
                 anchor_threshold = 0.15 if state.latch_occupied else 0.25
 
-                # Two-tier confidence gate:
-                # - Acquisition (slot VACANT): requires confidence >= acquisition_conf_thresh
-                # - Retention (slot OCCUPIED/LEAVING/ENTERING): requires confidence >= retention_conf_thresh or anchor IoU
+                num_in = sum(1 for d in stance_probes if d >= 0.0)
+                tire_min = min(d_left, d_right)
+
+                # Two-tier confidence & multi-point stance gate:
+                # - Acquisition (slot VACANT): requires confidence >= acquisition_conf_thresh,
+                #   d_ground >= wheel_contact_margin_px, and strong multi-point stance:
+                #   either at least 4 probes inside (wide vehicle/bumper protrusion inside slot),
+                #   OR at least 2 probes inside with axle inside (d_axle >= 0) and neither tire hanging out (tire_min >= -3.5px).
+                # - Retention (slot OCCUPIED/LEAVING/ENTERING): requires retention_conf or anchor IoU
                 is_vacant_slot = (state.phase == "VACANT")
                 if is_vacant_slot:
                     conf_ok = (vt.confidence >= self.acquisition_conf_thresh)
-                    # Akuisisi slot kosong: titik tengah roda (wheel_center) WAJIB masuk poligon (d_wheel >= 0.0)
-                    passed_gate = conf_ok and (d_wheel >= 0.0) and (d_ground >= self.wheel_contact_margin_px)
+                    stance_ok = (num_in >= 4) or (num_in >= 2 and d_axle >= 0.0 and tire_min >= -3.5)
+                    passed_gate = conf_ok and (d_ground >= self.wheel_contact_margin_px) and stance_ok
                 else:
                     conf_ok = (vt.confidence >= self.retention_conf_thresh)
                     passed_gate = (conf_ok and d_ground >= self.wheel_contact_margin_px) or (iou_anchor >= anchor_threshold)
@@ -1042,10 +1074,19 @@ class SmartParkingTracker:
                 if passed_gate:
                     dist_to_center = math.hypot(cx - slot_cx, cy - slot_cy)
                     dist_norm = dist_to_center / slot_diag
+                    ioz_stance = float(num_in) / float(len(stance_probes))
 
                     continuity_bonus = 25.0 if (state.track_id == vt.track_id and state.phase == "OCCUPIED") else 0.0
                     latch_bonus = 20.0 if state.latch_occupied else 0.0
-                    score = (d_ground * 3.0) - (dist_norm * 30.0) + (iou_slot * 30.0) + (iou_anchor * 30.0) + continuity_bonus + latch_bonus
+                    score = (
+                        (d_ground * 3.0)
+                        - (dist_norm * 30.0)
+                        + (iou_slot * 30.0)
+                        + (ioz_stance * 20.0)
+                        + (iou_anchor * 30.0)
+                        + continuity_bonus
+                        + latch_bonus
+                    )
                     candidates.append((score, s_id, vt))
 
             # Evaluasi diagnostik pasif terpisah untuk track non-vehicle / unconfirmed (HANYA MEMBACA)
@@ -1208,7 +1249,11 @@ class SmartParkingTracker:
                     # Latch hanya setelah minimal 10 konfirmasi warmup konsisten dan track confirmed
                     if state.warmup_hits >= 10 and matched_track.is_confirmed:
                         state.latch_occupied = True
+                        state.is_warmup_latch = True
                 else:
+                    if matched_track.is_confirmed:
+                        state.is_warmup_latch = False
+
                     if state.phase == "VACANT":
                         # Fallback dwell (tanpa tripwire crossing terdeteksi)
                         if state.dwell_duration >= self.dwell_threshold_sec:
@@ -1228,6 +1273,7 @@ class SmartParkingTracker:
                     # Latch occupancy jika kendaraan telah terparkir stabil melampaui ambang batas dwell
                     if state.phase == "OCCUPIED" and state.dwell_duration >= state.latch_dwell_threshold_sec:
                         state.latch_occupied = True
+                        state.is_warmup_latch = False
 
             else:
                 # Tidak ada kendaraan terdeteksi di dalam poligon
@@ -1240,9 +1286,11 @@ class SmartParkingTracker:
                     state.dwell_duration = 0.0
                     state.warmup_hits = 0
                 elif state.track_id is not None and state.track_id in assigned_track_ids and not state.latch_occupied:
-                    # Mobil ini telah terbukti terparkir di slot lain secara eksklusif (Exclusive Assignment)
-                    # Segera bebaskan slot ini kembali ke status VACANT hanya jika slot BELUM latched (belum stabil)
+                    # INSTANT YIELD: Mobil ini terbukti terparkir di slot lain secara eksklusif (Exclusive 1-to-1 Assignment)
+                    # Segera bebaskan slot ini kembali ke status VACANT jika belum latched!
                     state.phase = "VACANT"
+                    state.latch_occupied = False
+                    state.is_warmup_latch = False
                     state.track_id = None
                     state.vehicle_class = None
                     state.first_seen_time = None
@@ -1250,6 +1298,7 @@ class SmartParkingTracker:
                     state.leaving_since = None
                     state.polygon_clear_since = None
                     state.tripwire_crossed_in_time = None
+                    state.warmup_hits = 0
                 elif state.phase == "ENTERING":
                     # Timeout jika sinyal masuk sudah lewat tanpa kendaraan masuk poligon
                     if (
@@ -1262,18 +1311,20 @@ class SmartParkingTracker:
                         state.dwell_duration = 0.0
                         state.tripwire_crossed_in_time = None
                 elif state.phase == "OCCUPIED":
-                    # Penguatan hysteresis fisik ganda:
+                    # Penguatan hysteresis fisik ganda & toleransi oklusi:
                     # Slot hanya boleh LEAVING setelah poligon terbukti kosong >= confirm_threshold.
-                    # Gunakan threshold adaptif: 10.0 detik untuk slot latched, atau vacant_confirm_sec (5.0s) normal.
+                    # Gunakan threshold adaptif: 10.0 detik untuk slot latched stabil (tahan oklusi hingga 10s),
+                    # atau vacant_confirm_sec (5.0s) normal.
                     confirm_threshold = 10.0 if state.latch_occupied else state.vacant_confirm_sec
                     if state.last_seen_time > 0 and (current_time - state.last_seen_time) > 0.5:
                         # Mulai atau lanjutkan timer poligon kosong
                         if state.polygon_clear_since is None:
                             state.polygon_clear_since = current_time
-                        elif not is_warmup and state.latch_occupied and (current_time - state.polygon_clear_since) >= 4.0:
-                            # Auto-reset: jika slot ter-latch tetapi poligon bersih secara kontinu >= 4.0 detik pasca-warmup,
-                            # paksa reset ke VACANT untuk mencegah false latch berkepanjangan akibat glitch sesaat.
+                        elif not is_warmup and state.is_warmup_latch and (current_time - state.polygon_clear_since) >= 4.0:
+                            # Auto-reset KHUSUS warmup phantom latch yang tidak pernah terkonfirmasi pasca-warmup:
+                            # paksa reset ke VACANT setelah >= 4.0s untuk memulihkan false latch cold-start.
                             state.latch_occupied = False
+                            state.is_warmup_latch = False
                             state.phase = "VACANT"
                             state.track_id = None
                             state.vehicle_class = None
@@ -1297,6 +1348,7 @@ class SmartParkingTracker:
                         state.phase = "VACANT"
                         # Reset latch_occupied secara legal HANYA pada transisi final LEAVING -> VACANT
                         state.latch_occupied = False
+                        state.is_warmup_latch = False
                         state.track_id = None
                         state.vehicle_class = None
                         state.first_seen_time = None
@@ -1352,6 +1404,78 @@ class SmartParkingTracker:
                         except Exception:
                             pass
 
+        # ── Maneuvering Corridor Obstruction Engine ───────────────────────────
+        # Evaluasi kendaraan terkonfirmasi yang berada di luar seluruh poligon slot S1-S8
+        active_tids_in_frame = {vt.track_id for vt in vehicle_tracks}
+        for vt in vehicle_tracks:
+            # Jika kendaraan ini sudah sah mengokupansi salah satu slot, bukan halangan koridor
+            if vt.track_id in assigned_track_ids:
+                if vt.track_id in self._corridor_vehicles:
+                    del self._corridor_vehicles[vt.track_id]
+                continue
+
+            x1, y1, x2, y2 = vt.bbox
+            vcx = float((x1 + x2) / 2.0)
+            vcy = float((y1 + y2) / 2.0)
+            v_stance = (vcx, float(y2))
+
+            # Uji apakah kendaraan ini berada di dalam batas slot poligon manapun
+            in_any_slot = False
+            for geom in slot_geometries.values():
+                if cv2.pointPolygonTest(geom["pts_scaled"], v_stance, False) >= 0:
+                    in_any_slot = True
+                    break
+                if cv2.pointPolygonTest(geom["pts_scaled"], (vcx, vcy), False) >= 0:
+                    in_any_slot = True
+                    break
+
+            if in_any_slot:
+                if vt.track_id in self._corridor_vehicles:
+                    del self._corridor_vehicles[vt.track_id]
+                continue
+
+            # Kendaraan berada di koridor manuver / aspal jalan di luar petak slot
+            curr_pos = (vcx, vcy)
+            if vt.track_id not in self._corridor_vehicles:
+                self._corridor_vehicles[vt.track_id] = {
+                    "first_seen_time": current_time,
+                    "last_seen_time": current_time,
+                    "anchor_centroid": curr_pos,
+                    "last_centroid": curr_pos,
+                    "max_shift": 0.0,
+                    "bbox": vt.bbox,
+                    "class_label": vt.class_label,
+                    "dwell_duration": 0.0,
+                    "is_obstruction": False,
+                }
+            else:
+                entry = self._corridor_vehicles[vt.track_id]
+                entry["last_seen_time"] = current_time
+                entry["bbox"] = vt.bbox
+                entry["last_centroid"] = curr_pos
+                shift = math.hypot(curr_pos[0] - entry["anchor_centroid"][0], curr_pos[1] - entry["anchor_centroid"][1])
+                entry["max_shift"] = max(entry["max_shift"], shift)
+
+                if shift > self.corridor_shift_threshold_px:
+                    # Kendaraan sedang melaju / bermanuver (> 15px shift) -> reset anchor & dwell
+                    entry["anchor_centroid"] = curr_pos
+                    entry["first_seen_time"] = current_time
+                    entry["dwell_duration"] = 0.0
+                    entry["is_obstruction"] = False
+                else:
+                    # Stasioner di jalur manuver (shift <= 15px)
+                    entry["dwell_duration"] = current_time - entry["first_seen_time"]
+                    if entry["dwell_duration"] >= self.corridor_obstruction_dwell_sec:
+                        entry["is_obstruction"] = True
+
+        # Pembersihan entri koridor yang sudah hilang dari frame (> 3 detik)
+        stale_corridor_tids = [
+            tid for tid, entry in self._corridor_vehicles.items()
+            if (current_time - entry["last_seen_time"]) > 3.0 or tid not in active_tids_in_frame
+        ]
+        for tid in stale_corridor_tids:
+            del self._corridor_vehicles[tid]
+
         occupied_count = sum(1 for s in self.slot_states.values() if s.phase == "OCCUPIED")
         available_count = max(0, total_capacity - occupied_count)
         return {
@@ -1361,6 +1485,8 @@ class SmartParkingTracker:
             "gate_in": self.gate_in_count,
             "gate_out": self.gate_out_count,
             "slot_states": self.slot_states,
+            "obstruction_alert": self.has_obstruction,
+            "obstructions": self.active_obstructions,
         }
 
     def render_overlay(
@@ -1478,14 +1604,33 @@ class SmartParkingTracker:
         ]
         occ_text = ", ".join(occ_slots) if occ_slots else "-"
 
+        has_obs = bool(parking_stats.get("obstruction_alert") or self.has_obstruction)
         hud_line = f"PARKING: {occupied_slots}/{total_slots} OCCUPIED | TERISI: [{occ_text}]"
-        self._draw_hud_pill_top_right(canvas, hud_line, available_slots)
+        if has_obs:
+            hud_line += " | [!] OBSTRUCTION ALERT"
+
+        self._draw_hud_pill_top_right(canvas, hud_line, available_slots, is_alert=has_obs)
+
+        # ── 4. Visualisasi Halangan Koridor Manuver (Jika Terdeteksi) ──
+        obstructions = parking_stats.get("obstructions") or self.active_obstructions
+        for obs in obstructions:
+            ob_box = obs.get("bbox")
+            if not ob_box:
+                continue
+            ox1 = int(round(ob_box[0] * sx))
+            oy1 = int(round(ob_box[1] * sy))
+            ox2 = int(round(ob_box[2] * sx))
+            oy2 = int(round(ob_box[3] * sy))
+            cv2.rectangle(canvas, (ox1, oy1), (ox2, oy2), (0, 69, 255), 2, cv2.LINE_AA)
+            badge_str = f"[!] HALANGAN ({int(obs.get('dwell_sec', 0))}s)"
+            self._draw_slot_badge(canvas, badge_str, int((ox1 + ox2) / 2), max(12, oy1 - 8))
 
     def _draw_hud_pill_top_right(
         self,
         canvas: np.ndarray,
         line: str,
         available: int,
+        is_alert: bool = False,
     ) -> None:
         """
         Render status HUD di POJOK KANAN ATAS frame dengan Dark Semi-Transparent Pill
@@ -1516,13 +1661,19 @@ class SmartParkingTracker:
         canvas[y1:y2, x1:x2] = cv2.addWeighted(sub, 0.25, bg_color, 0.75, 0)
 
         # Border tipis 1px
-        border_col = (0, 220, 100) if available > 0 else (0, 60, 255)
+        if is_alert:
+            border_col = (0, 69, 255)
+        else:
+            border_col = (0, 220, 100) if available > 0 else (0, 60, 255)
         cv2.rectangle(canvas, (x1, y1), (x2, y2), border_col, 1, cv2.LINE_AA)
 
         # Teks 1 baris
         tx = x1 + pad_h
         ty = y1 + pad_v + th
-        text_col = (0, 235, 120) if available > 0 else (0, 80, 255)
+        if is_alert:
+            text_col = (0, 140, 255)
+        else:
+            text_col = (0, 235, 120) if available > 0 else (0, 80, 255)
         cv2.putText(canvas, line, (tx, ty), font_face, font_sc, text_col, font_thick, cv2.LINE_AA)
 
     def _render_block_overlay(

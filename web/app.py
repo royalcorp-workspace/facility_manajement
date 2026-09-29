@@ -153,6 +153,8 @@ def create_app(
                     "available_slots": avail,
                     "gate_in": pt.gate_in_count,
                     "gate_out": pt.gate_out_count,
+                    "obstruction_alert": getattr(pt, "has_obstruction", False),
+                    "obstructions": getattr(pt, "active_obstructions", []),
                     "slots": {
                         s_id: {
                             "phase": s.phase,
