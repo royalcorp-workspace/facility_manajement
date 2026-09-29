@@ -280,6 +280,88 @@ def test_case_5_non_regression_checks():
     print("  ✓ PASS: Seluruh 6 baseline RCA validation tests 100% PASS.")
 
 
+def test_case_6_seven_slots_occupied_s4_s8_recovery():
+    """
+    Test Case 6: Verifikasi Rekoveri Okupansi 7/8 (S1, S3, S4, S5, S6, S7, S8)
+    Memastikan mobil hitam di S4 (roof shadow/contrast rendah) dan mobil putih di S8
+    terkunci solid OCCUPIED sehingga HUD menampilkan:
+    PARKING: 7/8 OCCUPIED | TERISI: [S1, S3, S4, S5, S6, S7, S8]
+    """
+    print("\n[TEST 6] Live Calibration Verification: 7/8 Slots Occupied (S4 & S8 Recovery)...")
+    roi_cfg = load_roi_zones(Path("cameras/cam_01/roi_zones.json"))
+    tracker = SmartParkingTracker(dwell_threshold_sec=10.0)
+
+    # Buat track deteksi realistis untuk 7 mobil yang terparkir: S1, S3, S4, S5, S6, S7, S8 (S2 kosong)
+    tracks = []
+    occupied_target_zones = ["zone_01", "zone_03", "zone_04", "zone_05", "zone_06", "zone_07", "zone_08"]
+
+    for idx, z_id in enumerate(occupied_target_zones, start=1):
+        poly = next(p for p in roi_cfg.polygons if p.zone_id == z_id)
+        pts = np.array([[p.x / 3.0, p.y / 3.0] for p in poly.points])
+        cx = float(np.mean(pts[:, 0]))
+        cy = float(np.mean(pts[:, 1]))
+        max_y = float(np.max(pts[:, 1]))
+
+        # Khusus S4: mobil hitam di bawah bayangan atap kanopi, titik roda meleset sedikit keluar (-3px)
+        if z_id == "zone_04":
+            bbox = (cx - 24.0, max_y - 48.0, cx + 24.0, max_y + 3.0)
+            conf = 0.72
+        # Khusus S8: mobil putih di petak terluar kanan
+        elif z_id == "zone_08":
+            bbox = (cx - 22.0, max_y - 45.0, cx + 22.0, max_y - 2.0)
+            conf = 0.88
+        else:
+            bbox = (cx - 22.0, max_y - 46.0, cx + 22.0, max_y - 3.0)
+            conf = 0.85
+
+        tracks.append(
+            TrackResult(
+                track_id=100 + idx,
+                class_label="car",
+                class_id=2,
+                confidence=conf,
+                bbox=bbox,
+                is_confirmed=True,
+            )
+        )
+
+    # Frame 1: Masuk
+    tracker.update(tracks, roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=400.0)
+    # Frame 2: Dwell >= 10s
+    stats = tracker.update(tracks, roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=411.5)
+
+    assert stats["occupied_slots"] == 7, f"Expected 7 occupied slots, got {stats['occupied_slots']}"
+    assert stats["available_slots"] == 1, f"Expected 1 available slot, got {stats['available_slots']}"
+
+    assert tracker.slot_states["zone_04"].occupied, "Slot S4 (mobil hitam) WAJIB OCCUPIED!"
+    assert tracker.slot_states["zone_08"].occupied, "Slot S8 (mobil putih) WAJIB OCCUPIED!"
+    assert not tracker.slot_states["zone_02"].occupied, "Slot S2 harus tetap VACANT!"
+
+    # Uji visual HUD string
+    occ_slots = [
+        f"S{s.slot_num}"
+        for s in sorted(tracker.slot_states.values(), key=lambda x: x.slot_num)
+        if s.phase == "OCCUPIED"
+    ]
+    occ_str = ", ".join(occ_slots)
+    expected_str = "S1, S3, S4, S5, S6, S7, S8"
+    assert occ_str == expected_str, f"HUD occupied mismatch: expected '{expected_str}', got '{occ_str}'"
+
+    canvas = np.zeros((360, 640, 3), dtype=np.uint8)
+    tracker.render_overlay(
+        canvas=canvas,
+        polygons=roi_cfg.polygons,
+        tripwires=roi_cfg.tripwires,
+        tracks=tracks,
+        scale_x=3.0,
+        scale_y=3.0,
+        parking_stats=stats,
+        current_time=411.5,
+    )
+
+    print(f"  ✓ PASS: Kuota terverifikasi 7/8! Status HUD: PARKING: 7/8 OCCUPIED | TERISI: [{occ_str}]")
+
+
 if __name__ == "__main__":
     print("==================================================================")
     print("  RESILIENT MULTI-ZONE PARKING EDGE CASES TEST SUITE (cam_01)")
@@ -289,6 +371,7 @@ if __name__ == "__main__":
     test_case_3_corridor_obstruction()
     test_case_4_bumper_protrusion_stance()
     test_case_5_non_regression_checks()
+    test_case_6_seven_slots_occupied_s4_s8_recovery()
     print("\n==================================================================")
-    print("  ALL 5 RESILIENT PARKING EDGE CASE TESTS PASSED! (100% SUCCESS) ✓")
+    print("  ALL 6 RESILIENT PARKING EDGE CASE TESTS PASSED! (100% SUCCESS) ✓")
     print("==================================================================")

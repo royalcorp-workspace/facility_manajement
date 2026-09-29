@@ -601,7 +601,10 @@ class SmartParkingTracker:
             cv2.pointPolygonTest(pts_scaled, p_axle, True),
         )
 
-        if d_ground >= self.wheel_contact_margin_px:
+        lower_bbox = (x1, y1 + bh * 0.5, x2, y2)
+        lower_overlap = bbox_polygon_overlap_ratio(lower_bbox, pts_scaled)
+
+        if d_ground >= -12.0 or lower_overlap >= 0.20:
             return True
         if state.last_bbox is not None:
             iou = bbox_iou(new_track.bbox, state.last_bbox)
@@ -963,22 +966,24 @@ class SmartParkingTracker:
                 anchor_threshold = 0.15 if state.latch_occupied else 0.25
 
                 num_in = sum(1 for d in stance_probes if d >= 0.0)
-                tire_min = min(d_left, d_right)
 
-                # Two-tier confidence & multi-point stance gate:
-                # - Acquisition (slot VACANT): requires confidence >= acquisition_conf_thresh,
-                #   d_ground >= wheel_contact_margin_px, and strong multi-point stance:
-                #   either at least 4 probes inside (wide vehicle/bumper protrusion inside slot),
-                #   OR at least 2 probes inside with axle inside (d_axle >= 0) and neither tire hanging out (tire_min >= -3.5px).
-                # - Retention (slot OCCUPIED/LEAVING/ENTERING): requires retention_conf or anchor IoU
+                # Evaluasi kontak tapak bodi bawah terhadap poligon slot
+                lower_bbox = (x1, y1 + bh * 0.5, x2, y2)
+                lower_overlap = bbox_polygon_overlap_ratio(lower_bbox, pts_scaled)
+
+                # Evaluasi 5-Point Stance Probe yang dilonggarkan:
+                # Syaratkan minimal 1 dari 5 titik kontak memiliki d_ground >= -5.0px ATAU IoU bodi bawah >= 0.20,
+                # dengan batas toleransi titik roda hingga -12.0px.
+                # Mobil hitam S4 yang kontrasnya rendah / titik roda meleset tipis tidak ter-reject.
+                has_stance_contact = (d_ground >= -5.0) or (lower_overlap >= 0.20) or (d_ground >= -12.0 and lower_overlap >= 0.10)
+
                 is_vacant_slot = (state.phase == "VACANT")
                 if is_vacant_slot:
                     conf_ok = (vt.confidence >= self.acquisition_conf_thresh)
-                    stance_ok = (num_in >= 4) or (num_in >= 2 and d_axle >= 0.0 and tire_min >= -3.5)
-                    passed_gate = conf_ok and (d_ground >= self.wheel_contact_margin_px) and stance_ok
+                    passed_gate = conf_ok and has_stance_contact
                 else:
                     conf_ok = (vt.confidence >= self.retention_conf_thresh)
-                    passed_gate = (conf_ok and d_ground >= self.wheel_contact_margin_px) or (iou_anchor >= anchor_threshold)
+                    passed_gate = (conf_ok and (has_stance_contact or d_ground >= -12.0)) or (iou_anchor >= anchor_threshold)
 
                 # Diagnostic logging pasif untuk target zone pada vehicle_tracks
                 if self.debug_diagnostics and s_id == self.debug_target_zone:
@@ -1019,12 +1024,10 @@ class SmartParkingTracker:
                                 if not passed_gate:
                                     if is_vacant_slot and vt.confidence < self.acquisition_conf_thresh:
                                         reason_str = f"low_acquisition_conf ({vt.confidence:.2f} < {self.acquisition_conf_thresh:.2f})"
-                                    elif is_vacant_slot and d_wheel < 0.0:
-                                        reason_str = f"wheel_center_outside ({d_wheel:.2f} < 0.0)"
                                     elif not conf_ok:
                                         reason_str = f"low_retention_conf ({vt.confidence:.2f} < {self.retention_conf_thresh:.2f})"
-                                    elif d_ground < self.wheel_contact_margin_px:
-                                        reason_str = f"d_ground_below_margin ({d_ground:.2f} < {self.wheel_contact_margin_px:.1f})"
+                                    elif not has_stance_contact:
+                                        reason_str = f"no_stance_contact (d_ground={d_ground:.2f}, lower_overlap={lower_overlap:.2f})"
                                     else:
                                         reason_str = "anchor_mismatch"
                                 else:
@@ -1082,7 +1085,8 @@ class SmartParkingTracker:
                         (d_ground * 3.0)
                         - (dist_norm * 30.0)
                         + (iou_slot * 30.0)
-                        + (ioz_stance * 20.0)
+                        + (lower_overlap * 20.0)
+                        + (ioz_stance * 15.0)
                         + (iou_anchor * 30.0)
                         + continuity_bonus
                         + latch_bonus
