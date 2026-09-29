@@ -604,6 +604,11 @@ class SmartParkingTracker:
         lower_bbox = (x1, y1 + bh * 0.5, x2, y2)
         lower_overlap = bbox_polygon_overlap_ratio(lower_bbox, pts_scaled)
 
+        if getattr(state, "slot_id", None) == "zone_08":
+            max_x = float(np.max(pts_scaled[:, 0])) if len(pts_scaled) > 0 else 0.0
+            if (max_x > 1000.0 and cx > 1810.0) or (max_x <= 1000.0 and cx > 603.3):
+                return False
+
         if d_ground >= -12.0 or lower_overlap >= 0.20:
             return True
         if state.last_bbox is not None:
@@ -971,19 +976,42 @@ class SmartParkingTracker:
                 lower_bbox = (x1, y1 + bh * 0.5, x2, y2)
                 lower_overlap = bbox_polygon_overlap_ratio(lower_bbox, pts_scaled)
 
-                # Evaluasi 5-Point Stance Probe yang dilonggarkan:
-                # Syaratkan minimal 1 dari 5 titik kontak memiliki d_ground >= -5.0px ATAU IoU bodi bawah >= 0.20,
-                # dengan batas toleransi titik roda hingga -12.0px.
-                # Mobil hitam S4 yang kontrasnya rendah / titik roda meleset tipis tidak ter-reject.
-                has_stance_contact = (d_ground >= -5.0) or (lower_overlap >= 0.20) or (d_ground >= -12.0 and lower_overlap >= 0.10)
+                # Toleransi signed distance ground contact hingga -8.0 px untuk mobil di bawah bayangan kanopi gelap
+                eff_margin = max(8.0, self.wheel_contact_margin_px)
+                has_stance_contact = (
+                    (d_ground >= -eff_margin)
+                    or (lower_overlap >= 0.15)
+                    or (d_ground >= -12.0 and lower_overlap >= 0.10)
+                )
+
+                # Strict Bounding Centroid X-Filter untuk S8 (zone_08):
+                # Tapak roda tengah mobil abu-abu di luar area parkir berada di koordinat x > 1810 px (pada base frame 1080p).
+                # Jika track kendaraan memiliki cx > 1810 px (atau cx_infer > 603.3 pada 640p), reject kendaraan dari kandidat S8.
+                cx_1080p = (cx / sx) if sx > 0 else cx
+                is_outside_s8 = (s_id == "zone_08" and cx_1080p > 1810.0)
 
                 is_vacant_slot = (state.phase == "VACANT")
                 if is_vacant_slot:
-                    conf_ok = (vt.confidence >= self.acquisition_conf_thresh)
+                    # Mobil hitam di Slot S4 (zone_04) berada di bawah bayangan atap seng gelap (conf ~0.20 - 0.28).
+                    # Ambang akuisisi dilonggarkan ke 0.20 khusus mobil kelas "car" di S4 atau jika lower_overlap >= 0.15,
+                    # sementara slot S1 tetap menggunakan acquisition_conf_thresh default (0.32) untuk menolak bayangan kanopi.
+                    if s_id == "zone_04" and vt.class_label == "car" and (lower_overlap >= 0.15 or d_ground >= -eff_margin):
+                        acq_thresh = min(0.20, self.acquisition_conf_thresh)
+                    elif vt.class_label == "car" and s_id != "zone_01" and lower_overlap >= 0.15:
+                        acq_thresh = min(0.20, self.acquisition_conf_thresh)
+                    else:
+                        acq_thresh = self.acquisition_conf_thresh
+
+                    conf_ok = (vt.confidence >= acq_thresh)
                     passed_gate = conf_ok and has_stance_contact
                 else:
+                    acq_thresh = self.acquisition_conf_thresh
                     conf_ok = (vt.confidence >= self.retention_conf_thresh)
                     passed_gate = (conf_ok and (has_stance_contact or d_ground >= -12.0)) or (iou_anchor >= anchor_threshold)
+
+                # Isolasi mutlak mobil abu-abu di sebelah kanan S8 (murni algoritma tanpa mengubah poligon):
+                if is_outside_s8:
+                    passed_gate = False
 
                 # Diagnostic logging pasif untuk target zone pada vehicle_tracks
                 if self.debug_diagnostics and s_id == self.debug_target_zone:
@@ -1022,8 +1050,10 @@ class SmartParkingTracker:
                                     )
 
                                 if not passed_gate:
-                                    if is_vacant_slot and vt.confidence < self.acquisition_conf_thresh:
-                                        reason_str = f"low_acquisition_conf ({vt.confidence:.2f} < {self.acquisition_conf_thresh:.2f})"
+                                    if is_outside_s8:
+                                        reason_str = f"outside_s8_boundary (cx_1080p={cx_1080p:.1f} > 1810.0)"
+                                    elif is_vacant_slot and not conf_ok:
+                                        reason_str = f"low_acquisition_conf ({vt.confidence:.2f} < {acq_thresh:.2f})"
                                     elif not conf_ok:
                                         reason_str = f"low_retention_conf ({vt.confidence:.2f} < {self.retention_conf_thresh:.2f})"
                                     elif not has_stance_contact:
