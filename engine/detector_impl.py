@@ -127,11 +127,17 @@ class YOLO11nDetector(DetectorBase):
 
             # Semantic Class Remapping:
             # Di area parkir/fasilitas, mobil hitam ber-roofbox di bawah bayangan atap sering
-            # terdeteksi oleh YOLO sebagai "parking meter" (karena tiang/bayangan + kotak roofbox).
-            # Remap "parking meter" -> "car" jika memiliki dimensi dan aspect ratio kendaraan.
+            # terdeteksi oleh YOLO sebagai "parking meter" atau "truck" (karena kontras rendah + kanopi gelap).
+            # Remap ke "car" jika memiliki dimensi dan aspect ratio kendaraan penumpang.
+            aspect_ratio = (w / h) if h > 0 else 0.0
             if label == "parking meter":
-                aspect_ratio = (w / h) if h > 0 else 0.0
                 if w >= 25.0 and h >= 25.0 and 0.35 <= aspect_ratio <= 2.5:
+                    label = "car"
+                    class_id = 2  # COCO class_id untuk car
+            elif label in ("truck", "bus"):
+                area = w * h
+                score_car = float(scores[2]) if len(scores) > 2 else 0.0
+                if ((w <= 110.0 and h <= 110.0) or (area <= 10000.0 and 0.4 <= aspect_ratio <= 2.2)) and score_car >= 0.15:
                     label = "car"
                     class_id = 2  # COCO class_id untuk car
 

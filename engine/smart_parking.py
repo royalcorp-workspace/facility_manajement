@@ -931,8 +931,6 @@ class SmartParkingTracker:
             allowed_classes = set(slot_target_classes) if slot_target_classes else self.vehicle_classes
 
             for vt in vehicle_tracks:
-                if vt.class_label not in allowed_classes:
-                    continue
                 x1, y1, x2, y2 = vt.bbox
                 cx = float((x1 + x2) / 2.0)
                 cy = float((y1 + y2) / 2.0)
@@ -976,6 +974,17 @@ class SmartParkingTracker:
                 lower_bbox = (x1, y1 + bh * 0.5, x2, y2)
                 lower_overlap = bbox_polygon_overlap_ratio(lower_bbox, pts_scaled)
 
+                # Evaluasi kecocokan kelas kendaraan (Defense-in-depth):
+                # Slot S1 (zone_01) dan S2 (zone_02) wajib strict hanya 'car' (menolak bayangan kanopi / false positive).
+                # Khusus slot S4 (zone_04) di bawah atap gelap menoleransi misklasifikasi 'truck'
+                # jika memiliki kontak fisik kuat di dalam slot (lower_overlap >= 0.20 atau d_ground >= 0.0 px).
+                is_class_allowed = (vt.class_label in allowed_classes)
+                if not is_class_allowed:
+                    if s_id == "zone_04" and vt.class_label in ("truck", "bus") and (lower_overlap >= 0.20 or d_ground >= 0.0):
+                        is_class_allowed = True
+                if not is_class_allowed:
+                    continue
+
                 # Toleransi signed distance ground contact hingga -8.0 px untuk mobil di bawah bayangan kanopi gelap
                 eff_margin = max(8.0, self.wheel_contact_margin_px)
                 has_stance_contact = (
@@ -993,11 +1002,11 @@ class SmartParkingTracker:
                 is_vacant_slot = (state.phase == "VACANT")
                 if is_vacant_slot:
                     # Mobil hitam di Slot S4 (zone_04) berada di bawah bayangan atap seng gelap (conf ~0.20 - 0.28).
-                    # Ambang akuisisi dilonggarkan ke 0.20 khusus mobil kelas "car" di S4 atau jika lower_overlap >= 0.15,
+                    # Ambang akuisisi dilonggarkan ke 0.20 khusus mobil di S4 atau jika lower_overlap >= 0.15,
                     # sementara slot S1 tetap menggunakan acquisition_conf_thresh default (0.32) untuk menolak bayangan kanopi.
-                    if s_id == "zone_04" and vt.class_label == "car" and (lower_overlap >= 0.15 or d_ground >= -eff_margin):
+                    if s_id == "zone_04" and vt.class_label in ("car", "truck") and (lower_overlap >= 0.15 or d_ground >= -eff_margin):
                         acq_thresh = min(0.20, self.acquisition_conf_thresh)
-                    elif vt.class_label == "car" and s_id != "zone_01" and lower_overlap >= 0.15:
+                    elif vt.class_label in ("car", "truck") and s_id != "zone_01" and lower_overlap >= 0.15:
                         acq_thresh = min(0.20, self.acquisition_conf_thresh)
                     else:
                         acq_thresh = self.acquisition_conf_thresh
