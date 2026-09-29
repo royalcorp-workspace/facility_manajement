@@ -189,7 +189,23 @@ def test_case_3_corridor_obstruction():
     assert stats_61s["occupied_slots"] == 0
     assert stats_61s["available_slots"] == 8
 
-    # 4. Uji Reset jika Kendaraan Bergerak Melaju (> 15px shift)
+    # 4. Verifikasi Visual Canvas Bebas dari Kotak Oranye & Banner Alert Halangan
+    canvas = np.zeros((360, 640, 3), dtype=np.uint8)
+    tracker.render_overlay(
+        canvas=canvas,
+        polygons=roi_cfg.polygons,
+        tripwires=roi_cfg.tripwires,
+        tracks=[stationary_61s],
+        scale_x=3.0,
+        scale_y=3.0,
+        parking_stats=stats_61s,
+        current_time=561.0,
+    )
+    # Warna peringatan oranye (0, 69, 255) TIDAK boleh muncul di canvas
+    orange_pixels = np.count_nonzero((canvas[:, :, 0] == 0) & (canvas[:, :, 1] == 69) & (canvas[:, :, 2] == 255))
+    assert orange_pixels == 0, f"Kotak visual halangan oranye tidak boleh dirender! (found {orange_pixels} orange pixels)"
+
+    # 5. Uji Reset jika Kendaraan Bergerak Melaju (> 15px shift)
     moving_car = TrackResult(
         track_id=888,
         class_label="car",
@@ -200,7 +216,7 @@ def test_case_3_corridor_obstruction():
     )
     stats_moving = tracker.update([moving_car], roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=562.0)
     assert not stats_moving["obstruction_alert"], "Halangan harus reset saat kendaraan bergerak melaju!"
-    print("  ✓ PASS: Maneuvering Corridor Obstruction Engine berhasil mendeteksi halangan & auto-reset saat bergerak.")
+    print("  ✓ PASS: Maneuvering Corridor Obstruction Engine berhasil mendeteksi halangan & layar tetap bersih tanpa kotak oranye.")
 
 
 def test_case_4_bumper_protrusion_stance():

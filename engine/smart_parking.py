@@ -1604,33 +1604,14 @@ class SmartParkingTracker:
         ]
         occ_text = ", ".join(occ_slots) if occ_slots else "-"
 
-        has_obs = bool(parking_stats.get("obstruction_alert") or self.has_obstruction)
         hud_line = f"PARKING: {occupied_slots}/{total_slots} OCCUPIED | TERISI: [{occ_text}]"
-        if has_obs:
-            hud_line += " | [!] OBSTRUCTION ALERT"
-
-        self._draw_hud_pill_top_right(canvas, hud_line, available_slots, is_alert=has_obs)
-
-        # ── 4. Visualisasi Halangan Koridor Manuver (Jika Terdeteksi) ──
-        obstructions = parking_stats.get("obstructions") or self.active_obstructions
-        for obs in obstructions:
-            ob_box = obs.get("bbox")
-            if not ob_box:
-                continue
-            ox1 = int(round(ob_box[0] * sx))
-            oy1 = int(round(ob_box[1] * sy))
-            ox2 = int(round(ob_box[2] * sx))
-            oy2 = int(round(ob_box[3] * sy))
-            cv2.rectangle(canvas, (ox1, oy1), (ox2, oy2), (0, 69, 255), 2, cv2.LINE_AA)
-            badge_str = f"[!] HALANGAN ({int(obs.get('dwell_sec', 0))}s)"
-            self._draw_slot_badge(canvas, badge_str, int((ox1 + ox2) / 2), max(12, oy1 - 8))
+        self._draw_hud_pill_top_right(canvas, hud_line, available_slots)
 
     def _draw_hud_pill_top_right(
         self,
         canvas: np.ndarray,
         line: str,
         available: int,
-        is_alert: bool = False,
     ) -> None:
         """
         Render status HUD di POJOK KANAN ATAS frame dengan Dark Semi-Transparent Pill
@@ -1661,19 +1642,13 @@ class SmartParkingTracker:
         canvas[y1:y2, x1:x2] = cv2.addWeighted(sub, 0.25, bg_color, 0.75, 0)
 
         # Border tipis 1px
-        if is_alert:
-            border_col = (0, 69, 255)
-        else:
-            border_col = (0, 220, 100) if available > 0 else (0, 60, 255)
+        border_col = (0, 220, 100) if available > 0 else (0, 60, 255)
         cv2.rectangle(canvas, (x1, y1), (x2, y2), border_col, 1, cv2.LINE_AA)
 
         # Teks 1 baris
         tx = x1 + pad_h
         ty = y1 + pad_v + th
-        if is_alert:
-            text_col = (0, 140, 255)
-        else:
-            text_col = (0, 235, 120) if available > 0 else (0, 80, 255)
+        text_col = (0, 235, 120) if available > 0 else (0, 80, 255)
         cv2.putText(canvas, line, (tx, ty), font_face, font_sc, text_col, font_thick, cv2.LINE_AA)
 
     def _render_block_overlay(
