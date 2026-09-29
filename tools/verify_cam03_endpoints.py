@@ -140,8 +140,8 @@ def run_audit():
     assert data["parking"].get("total_slots") == 30
     assert data["parking"].get("occupied_slots") == 8
     assert data["parking"].get("available_slots") == 22
-    assert data["parking"].get("gate_in") == 12
-    assert data["parking"].get("gate_out") == 4
+    assert "gate_in" not in data["parking"], "gate_in harus dihapus dari payload motorcycle_block"
+    assert "gate_out" not in data["parking"], "gate_out harus dihapus dari payload motorcycle_block"
     print("  [PASS] GET /api/status/cam_03 menyajikan metrik FPS, active tracks, dan status parkir blok motor secara akurat")
 
     # 6. Verifikasi GET /api/zones/cam_03 & GET /api/zones?cam=cam_03 (Open Access)

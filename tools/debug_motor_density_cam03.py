@@ -87,8 +87,13 @@ def main():
             outside_tracks.append((r, f"anatomical_reject (w_1080={w_1080p:.0f}px, h_1080={h_1080p:.0f}px)", 0.0))
             continue
 
-        # Motor hanya sah jika titik tumpu roda bawah (cx, y2) berada DI DALAM poligon zone_01
-        wheel_in = cv2.pointPolygonTest(pts_scaled, wheel_pt, False) >= 0
+        # Filter Confidence: Ambang batas akuisisi awal >= 0.28
+        if r.confidence < 0.28:
+            outside_tracks.append((r, f"conf < 0.28 ({r.confidence:.2f})", 0.0))
+            continue
+
+        # Motor hanya sah jika titik tumpu roda bawah (cx, y2) berada di dalam atau batas toleransi poligon
+        wheel_in = cv2.pointPolygonTest(pts_scaled, wheel_pt, True) >= -8.0
         overlap_ratio = bbox_polygon_overlap_ratio(r.bbox, pts_scaled)
 
         if not wheel_in:
@@ -101,7 +106,7 @@ def main():
 
         candidate_tracks.append(r)
 
-    print(f"\n--- DETEKSI MOTOR DI LUAR ZONE_01 (GUGUR / REJECT: {len(outside_tracks)}) ---")
+    print(f"\n--- DETEKSI MOTOR DI LUAR ZONE_01 / DITOLAK (GUGUR / REJECT: {len(outside_tracks)}) ---")
     for idx, (r, reason, ov) in enumerate(outside_tracks, 1):
         print(
             f"#{idx:02d} [{r.class_label}] conf={r.confidence:.2f} "
@@ -116,43 +121,21 @@ def main():
             f"bbox={[round(x, 1) for x in c.bbox]} overlap={ov*100:.1f}%"
         )
 
-    # 4. Deduplikasi Spasial Diperketat (Local NMS / IoU >= 0.30 + IoS >= 0.50 + Centroid Proximity <= 28px)
-    sorted_candidates = sorted(candidate_tracks, key=lambda t: t.confidence, reverse=True)
-    valid_tracks = []
-    suppressed = []
-
-    for cand in sorted_candidates:
-        c_cx = float((cand.bbox[0] + cand.bbox[2]) / 2.0)
-        c_cy = float((cand.bbox[1] + cand.bbox[3]) / 2.0)
-        is_dup = False
-        for acc in valid_tracks:
-            iou = bbox_iou(cand.bbox, acc.bbox)
-            ios = bbox_ios(cand.bbox, acc.bbox)
-            a_cx = float((acc.bbox[0] + acc.bbox[2]) / 2.0)
-            a_cy = float((acc.bbox[1] + acc.bbox[3]) / 2.0)
-            dist_px = math.hypot(c_cx - a_cx, c_cy - a_cy)
-
-            if iou >= 0.30 or ios >= 0.50 or dist_px <= 28.0:
-                reasons = []
-                if iou >= 0.30:
-                    reasons.append(f"IoU={iou:.2f} >= 0.30")
-                if ios >= 0.50:
-                    reasons.append(f"IoS={ios:.2f} >= 0.50")
-                if dist_px <= 28.0:
-                    reasons.append(f"CentroidDist={dist_px:.1f}px <= 28px")
-                reason_str = " | ".join(reasons)
-                suppressed.append((cand, acc, reason_str))
-                is_dup = True
-                break
-        if not is_dup:
-            valid_tracks.append(cand)
+    # 4. Deduplikasi Spasial Diperketat via deduplicate_motorcycle_tracks
+    valid_tracks = deduplicate_motorcycle_tracks(
+        candidate_tracks,
+        iou_thresh=0.30,
+        ios_thresh=0.40,
+        max_centroid_dist_px=38.0,
+    )
+    valid_set = set(id(t) for t in valid_tracks)
+    suppressed = [c for c in candidate_tracks if id(c) not in valid_set]
 
     print(f"\n--- DEDUPLIKASI KOTAK TUMPANG TINDIH / BERSARANG (SUPPRESSED: {len(suppressed)}) ---")
-    for cand, acc, reason_str in suppressed:
+    for cand in suppressed:
         print(
             f"  [DROP] conf={cand.confidence:.2f} bbox={[round(x, 1) for x in cand.bbox]} "
-            f"tertindih oleh conf={acc.confidence:.2f} bbox={[round(x, 1) for x in acc.bbox]} "
-            f"({reason_str})"
+            f"(Suppressed by Enhanced NMS / Multi-Box Overlap)"
         )
 
     print(f"\n--- HASIL DETEKSI MOTOR BERSIH SESUDAH DEDUPLIKASI ({len(valid_tracks)}) ---")

@@ -725,50 +725,51 @@ def test_scenario_14_block_mode_density_count():
     print("  [PASS] Scenario 14 Passed (Instant density dwell=0.0s & IoU footprint >=20% verified).")
 
 
-def test_scenario_15_block_mode_tripwire_dominance():
+def test_scenario_15_block_mode_pure_physical_density():
     """
-    Skenario 15: Double Verification: Dominasi Tripwire Net Count vs Densitas.
+    Skenario 15: Penghitungan Murni Berbasis Direct Physical Detection Spasial.
     Memastikan:
-    1. gate_in - gate_out terakumulasi secara akurat.
-    2. Konsolidasi okupansi mengambil max(tw_count, density_count).
-    3. apply_tripwire_signal guard mencegah pembuatan SlotState individual pada block mode.
+    1. Okupansi dihitung murni dari physical density (bukan tripwire).
+    2. apply_tripwire_signal guard mencegah pembuatan SlotState individual pada block mode.
+    3. Output stats bebas dari field gate_in / gate_out.
     """
-    print("[RUN] Scenario 15: Block Mode Tripwire Dominance & Net Counting...")
+    print("[RUN] Scenario 15: Block Mode Pure Physical Density Counting...")
     tracker = SmartParkingTracker(
         parking_mode="motorcycle_block",
         block_capacity=30,
         vehicle_classes={"motorcycle", "bicycle"},
-        stationary_dwell_sec=5.0,
+        stationary_dwell_sec=0.0,
     )
     zone1 = create_dummy_zone("zone_01", 100, 100, 800, 800)
     polys = [zone1]
     t = 3000.0
 
-    # Simulasi tripwire gate crossing: 8 IN, 2 OUT -> net tw_count = 6
-    for i in range(8):
-        tracker.record_gate_crossing("A_TO_B", tripwire_id="tw_01", timestamp=t + i)
-    for i in range(2):
-        tracker.record_gate_crossing("B_TO_A", tripwire_id="tw_01", timestamp=t + 10 + i)
-
-    assert tracker.gate_in_count == 8
-    assert tracker.gate_out_count == 2
-
-    # Di dalam zona hanya ada 3 motor stasioner (density=3)
-    motos_3 = [
-        create_vehicle_track(track_id=i, bbox=(150 + i * 50, 150 + i * 50, 180 + i * 50, 200 + i * 50), class_label="motorcycle")
-        for i in range(1, 4)
+    # Di dalam zona ada 4 motor sah
+    motos_4 = [
+        create_vehicle_track(
+            track_id=i,
+            bbox=(200 + i * 60, 200 + i * 60, 240 + i * 60, 260 + i * 60),
+            class_label="motorcycle",
+        )
+        for i in range(1, 5)
     ]
-    tracker.update(motos_3, polys, 1.0, 1.0, t)
-    res = tracker.update(motos_3, polys, 1.0, 1.0, t + 6.0)
+    for m in motos_4:
+        m.confidence = 0.60
 
-    # Konsolidasi: max(tw_count=6, density=3) = 6
-    assert res["occupied_slots"] == 6
-    assert res["available_slots"] == 24
+    # Lakukan update
+    tracker.update(motos_4, polys, 1.0, 1.0, t)
+    res = tracker.update(motos_4, polys, 1.0, 1.0, t + 1.0)
+
+    # Murni densitas fisik = 4
+    assert res["occupied_slots"] == 4
+    assert res["available_slots"] == 26
+    assert "gate_in" not in res, "gate_in tidak boleh ada di statistik block mode"
+    assert "gate_out" not in res, "gate_out tidak boleh ada di statistik block mode"
 
     # apply_tripwire_signal guard check: tidak boleh membuat slot_states
-    tracker.apply_tripwire_signal("zone_01", "A_TO_B", 99, t + 7.0)
+    tracker.apply_tripwire_signal("zone_01", "A_TO_B", 99, t + 2.0)
     assert len(tracker.slot_states) == 0, "apply_tripwire_signal tidak boleh membuat slotState di block mode"
-    print("  [PASS] Scenario 15 Passed (Tripwire dominance max(tw, density) and signal guard verified).")
+    print("  [PASS] Scenario 15 Passed (Pure physical density and signal guard verified).")
 
 
 def test_scenario_16_block_mode_hud_format():
@@ -784,43 +785,42 @@ def test_scenario_16_block_mode_hud_format():
         parking_mode="motorcycle_block",
         block_capacity=30,
         vehicle_classes={"motorcycle", "bicycle"},
+        stationary_dwell_sec=0.0,
     )
     zone1 = create_dummy_zone("zone_01", 100, 100, 800, 800)
     polys = [zone1]
-    tw1 = TripwireRule(
-        tripwire_id="tw_01",
-        label="Tripwire 1",
-        p1=ROIPoint(x=500, y=200),
-        p2=ROIPoint(x=600, y=300),
-        direction="BOTH",
-    )
 
-    # 6 IN, 1 OUT -> 5 occupied
-    for _ in range(6):
-        tracker.record_gate_crossing("A_TO_B", tripwire_id="tw_01", timestamp=100.0)
-    tracker.record_gate_crossing("B_TO_A", tripwire_id="tw_01", timestamp=105.0)
+    sample_motos = [
+        create_vehicle_track(
+            track_id=i,
+            bbox=(200 + i * 60, 200 + i * 60, 240 + i * 60, 260 + i * 60),
+            class_label="motorcycle",
+        )
+        for i in range(1, 6)
+    ]
+    for m in sample_motos:
+        m.confidence = 0.70
 
-    stats = tracker.update([], polys, 1.0, 1.0, 110.0)
+    tracker.update(sample_motos, polys, 1.0, 1.0, 100.0)
+    stats = tracker.update(sample_motos, polys, 1.0, 1.0, 102.0)
+
     canvas = np.zeros((720, 1280, 3), dtype=np.uint8)
-
-    sample_moto = create_vehicle_track(1, (200, 200, 250, 300), class_label="motorcycle")
-    sample_moto.confidence = 0.88
     tracker.render_overlay(
         canvas=canvas,
         polygons=polys,
-        tripwires=[tw1],
-        tracks=[sample_moto],
+        tripwires=[],
+        tracks=sample_motos,
         scale_x=1.0,
         scale_y=1.0,
         parking_stats=stats,
-        current_time=110.0,
+        current_time=102.0,
     )
 
     assert np.sum(canvas) > 0, "Canvas harus terisi elemen visual yang digambar"
     assert stats["occupied_slots"] == 5
     assert stats["available_slots"] == 25
-    assert stats["gate_in"] == 6
-    assert stats["gate_out"] == 1
+    assert "gate_in" not in stats
+    assert "gate_out" not in stats
     print("  [PASS] Scenario 16 Passed (1-Line HUD & Motorcycle Bounding Boxes rendered successfully).")
 
 
@@ -828,33 +828,39 @@ def test_scenario_17_block_mode_capacity_cap_at_30():
     """
     Skenario 17: Batasan Kapasitas (Clamping Kuota 0 s.d. 30 Unit).
     Memastikan:
-    1. Jika akumulasi tripwire melebihi 30 (misal 38), occupied dibatasi tepat pada 30 dan available = 0.
-    2. Jika gate_out > gate_in (akumulasi negatif), occupied tidak boleh < 0 (tetap 0).
+    1. Jika deteksi fisik melebihi 30 (misal 35 motor), occupied dibatasi tepat pada 30 dan available = 0.
+    2. Jika 0 motor, occupied = 0 dan available = 30.
     """
     print("[RUN] Scenario 17: Block Mode Capacity Clamping (Cap at 30)...")
     tracker = SmartParkingTracker(
         parking_mode="motorcycle_block",
         block_capacity=30,
         vehicle_classes={"motorcycle", "bicycle"},
+        stationary_dwell_sec=0.0,
     )
-    zone1 = create_dummy_zone("zone_01", 100, 100, 800, 800)
+    zone1 = create_dummy_zone("zone_01", 50, 50, 950, 950)
     polys = [zone1]
 
-    # 40 IN, 2 OUT -> net tw = 38 (melebihi kapasitas 30)
-    for _ in range(40):
-        tracker.record_gate_crossing("A_TO_B", tripwire_id="tw_01", timestamp=200.0)
-    for _ in range(2):
-        tracker.record_gate_crossing("B_TO_A", tripwire_id="tw_01", timestamp=205.0)
+    # Buat 35 motor terdeteksi di dalam zona
+    many_motos = [
+        create_vehicle_track(
+            track_id=i,
+            bbox=(60 + (i % 6) * 50, 60 + (i // 6) * 50, 95 + (i % 6) * 50, 105 + (i // 6) * 50),
+            class_label="motorcycle",
+        )
+        for i in range(1, 36)
+    ]
+    for m in many_motos:
+        m.confidence = 0.75
 
-    stats = tracker.update([], polys, 1.0, 1.0, 210.0)
+    tracker.update(many_motos, polys, 1.0, 1.0, 200.0)
+    stats = tracker.update(many_motos, polys, 1.0, 1.0, 205.0)
+
     assert stats["occupied_slots"] == 30, f"Harus di-cap pada 30, dapat {stats['occupied_slots']}"
     assert stats["available_slots"] == 0, f"Available harus 0, dapat {stats['available_slots']}"
-    assert stats["gate_in"] == 40
-    assert stats["gate_out"] == 2
 
-    # Tes net negatif: jika gate_out > gate_in
-    tracker2 = SmartParkingTracker(parking_mode="motorcycle_block", block_capacity=30)
-    tracker2.record_gate_crossing("B_TO_A", tripwire_id="tw_01", timestamp=10.0)
+    # Tes kosong: 0 motor
+    tracker2 = SmartParkingTracker(parking_mode="motorcycle_block", block_capacity=30, stationary_dwell_sec=0.0)
     stats2 = tracker2.update([], polys, 1.0, 1.0, 20.0)
     assert stats2["occupied_slots"] == 0
     assert stats2["available_slots"] == 30
@@ -882,7 +888,7 @@ if __name__ == "__main__":
         test_scenario_12_vehicle_class_aliasing_and_roofbox()
         test_scenario_13_block_mode_init()
         test_scenario_14_block_mode_density_count()
-        test_scenario_15_block_mode_tripwire_dominance()
+        test_scenario_15_block_mode_pure_physical_density()
         test_scenario_16_block_mode_hud_format()
         test_scenario_17_block_mode_capacity_cap_at_30()
         print("==================================================================")

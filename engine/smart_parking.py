@@ -113,16 +113,24 @@ def bbox_ios(box_a: Tuple[float, float, float, float], box_b: Tuple[float, float
 def deduplicate_motorcycle_tracks(
     tracks: List[TrackResult],
     iou_thresh: float = 0.30,
-    ios_thresh: float = 0.50,
-    max_centroid_dist_px: float = 28.0,
+    ios_thresh: float = 0.40,
+    max_centroid_dist_px: float = 38.0,
 ) -> List[TrackResult]:
-
+    """
+    Deduplikasi spasial cerdas untuk kendaraan roda dua (motorcycle / bicycle):
+    1. Sort kandidat berdasarkan confidence tertinggi.
+    2. Local NMS: tolak jika IoU >= iou_thresh atau IoS >= ios_thresh atau jarak centroid <= max_centroid_dist_px.
+    3. Multi-Box Cumulative Overlap Rejection: tolak jika >= 50% luas kotak tertutup oleh gabungan kotak yang sudah diterima.
+    """
     sorted_tracks = sorted(tracks, key=lambda t: t.confidence, reverse=True)
     deduped: List[TrackResult] = []
+
     for cand in sorted_tracks:
         c_cx = float((cand.bbox[0] + cand.bbox[2]) / 2.0)
         c_cy = float((cand.bbox[1] + cand.bbox[3]) / 2.0)
         is_dup = False
+
+        # 1. Pairwise checks
         for acc in deduped:
             iou = bbox_iou(cand.bbox, acc.bbox)
             ios = bbox_ios(cand.bbox, acc.bbox)
@@ -132,8 +140,29 @@ def deduplicate_motorcycle_tracks(
             if iou >= iou_thresh or ios >= ios_thresh or dist_px <= max_centroid_dist_px:
                 is_dup = True
                 break
+
+        if is_dup:
+            continue
+
+        # 2. Multi-Box Cumulative Overlap Rejection
+        cand_w = int(math.ceil(cand.bbox[2] - cand.bbox[0]))
+        cand_h = int(math.ceil(cand.bbox[3] - cand.bbox[1]))
+        if cand_w > 0 and cand_h > 0 and len(deduped) > 0:
+            mask = np.zeros((cand_h, cand_w), dtype=np.uint8)
+            for acc in deduped:
+                ix1 = max(0, int(math.floor(acc.bbox[0] - cand.bbox[0])))
+                iy1 = max(0, int(math.floor(acc.bbox[1] - cand.bbox[1])))
+                ix2 = min(cand_w, int(math.ceil(acc.bbox[2] - cand.bbox[0])))
+                iy2 = min(cand_h, int(math.ceil(acc.bbox[3] - cand.bbox[1])))
+                if ix2 > ix1 and iy2 > iy1:
+                    mask[iy1:iy2, ix1:ix2] = 1
+            covered_ratio = float(np.sum(mask)) / float(cand_w * cand_h)
+            if covered_ratio >= 0.50:
+                is_dup = True
+
         if not is_dup:
             deduped.append(cand)
+
     return deduped
 
 
@@ -146,8 +175,9 @@ def is_valid_motorcycle_anatomy(
     min_w_1080p: float = 20.0,
     min_h_1080p: float = 25.0,
     max_area_1080p: float = 65000.0,
-    min_aspect_ratio: float = 0.20,
-    max_aspect_ratio: float = 2.50,
+    min_area_360p: float = 800.0,
+    min_hw_ratio: float = 0.65,
+    max_hw_ratio: float = 2.00,
 ) -> bool:
     sx = (1.0 / scale_x) if scale_x > 1.0 else scale_x
     sy = (1.0 / scale_y) if scale_y > 1.0 else scale_y
@@ -159,7 +189,12 @@ def is_valid_motorcycle_anatomy(
     bw_1080p = bw_curr / sx
     bh_1080p = bh_curr / sy
     area_1080p = bw_1080p * bh_1080p
-    aspect_ratio = bw_1080p / bh_1080p
+    area_curr = bw_curr * bh_curr
+    hw_ratio = bh_1080p / bw_1080p
+
+    # Filter luas minimum (800 px² pada 360p atau 7200 px² pada 1080p)
+    if area_curr < min_area_360p and area_1080p < (min_area_360p * 9.0):
+        return False
 
     if (
         bw_1080p > max_w_1080p
@@ -167,8 +202,8 @@ def is_valid_motorcycle_anatomy(
         or bw_1080p < min_w_1080p
         or bh_1080p < min_h_1080p
         or area_1080p > max_area_1080p
-        or aspect_ratio < min_aspect_ratio
-        or aspect_ratio > max_aspect_ratio
+        or hw_ratio < min_hw_ratio
+        or hw_ratio > max_hw_ratio
     ):
         return False
     return True
@@ -578,12 +613,17 @@ class SmartParkingTracker:
         grace_period_sec: float = 3.0,
         iou_threshold: float = 0.35,
     ) -> bool:
+        effective_grace = 15.0 if (state.latch_occupied or getattr(state, "dwell_duration", 0.0) >= 10.0) else grace_period_sec
         if state.last_seen_time > 0:
             elapsed = current_time - state.last_seen_time
-            if elapsed > grace_period_sec:
+            if elapsed > effective_grace:
                 return False
 
         x1, y1, x2, y2 = new_track.bbox
+        max_pt_y = float(np.max(pts_scaled[:, 1])) if len(pts_scaled) > 0 else 0.0
+        y2_ai = (y2 * (360.0 / 1080.0)) if (max_pt_y > 360.0 or y2 > 360.0) else y2
+        if getattr(state, "slot_id", None) in ("zone_01", "zone_02", "zone_03", "zone_04", "zone_05", "zone_06") and y2_ai > 230.0:
+            return False
         cx = float((x1 + x2) / 2.0)
         bw = max(1.0, x2 - x1)
         bh = max(1.0, y2 - y1)
@@ -625,8 +665,6 @@ class SmartParkingTracker:
             "total_slots": self.block_capacity,
             "occupied_slots": occupied,
             "available_slots": available,
-            "gate_in": self.gate_in_count,
-            "gate_out": self.gate_out_count,
             "slot_states": {},
             "parking_mode": "motorcycle_block",
         }
@@ -662,10 +700,14 @@ class SmartParkingTracker:
         if self._block_exclusion_x_1080p is not None:
             drum_excl_x_scaled = int(self._block_exclusion_x_1080p * sx)
 
+        scale_factor = max(1.0, sx / (1.0 / 3.0))
+
         candidate_tracks: List[TrackResult] = []
+        near_dist_thresh = 38.0 * scale_factor
         for track in vehicle_tracks:
             rx1, ry1, rx2, ry2 = track.bbox
             cx = float((rx1 + rx2) / 2.0)
+            cy = float((ry1 + ry2) / 2.0)
             wheel_y = float(ry2)
             wheel_pt = (int(cx), int(wheel_y))
 
@@ -675,7 +717,21 @@ class SmartParkingTracker:
             if not is_valid_motorcycle_anatomy(track.bbox, sx, sy):
                 continue
 
-            wheel_in = cv2.pointPolygonTest(pts_scaled, wheel_pt, False) >= 0
+            # Multi-Tier Thresholding:
+            # - Ambang retensi motor terkunci (is_latched): conf >= 0.20
+            # - Ambang akuisisi motor baru: conf >= 0.28 (akomodasi variasi pencahayaan lapangan)
+            is_near_latched = False
+            for unit in self._stationary_motor_units.values():
+                if unit.is_latched and math.hypot(cx - unit.centroid[0], cy - unit.centroid[1]) < 30.0:
+                    is_near_latched = True
+                    break
+
+            min_conf = 0.20 if is_near_latched else 0.28
+            if track.confidence < min_conf:
+                continue
+
+            # Kontak roda pada batas poligon dengan toleransi hingga -8.0px
+            wheel_in = cv2.pointPolygonTest(pts_scaled, wheel_pt, True) >= -8.0
             if not wheel_in:
                 continue
 
@@ -688,7 +744,7 @@ class SmartParkingTracker:
         valid_tracks = deduplicate_motorcycle_tracks(
             candidate_tracks,
             iou_thresh=0.30,
-            ios_thresh=0.50,
+            ios_thresh=0.40,
             max_centroid_dist_px=28.0,
         )
 
@@ -702,7 +758,7 @@ class SmartParkingTracker:
             cand_cy = float((cand.bbox[1] + cand.bbox[3]) / 2.0)
 
             best_unit_id = None
-            best_dist = 30.0  
+            best_dist = 30.0
 
             for uid, unit in self._stationary_motor_units.items():
                 if uid in matched_unit_ids:
@@ -760,6 +816,32 @@ class SmartParkingTracker:
 
         for uid in to_delete:
             del self._stationary_motor_units[uid]
+
+        # Prune redundant/overlapping stationary units
+        prune_uids = set()
+        active_uids = list(self._stationary_motor_units.keys())
+        for i in range(len(active_uids)):
+            u1_id = active_uids[i]
+            if u1_id in prune_uids or u1_id not in self._stationary_motor_units:
+                continue
+            u1 = self._stationary_motor_units[u1_id]
+            for j in range(i + 1, len(active_uids)):
+                u2_id = active_uids[j]
+                if u2_id in prune_uids or u2_id not in self._stationary_motor_units:
+                    continue
+                u2 = self._stationary_motor_units[u2_id]
+                u_dist = math.hypot(u1.centroid[0] - u2.centroid[0], u1.centroid[1] - u2.centroid[1])
+                u_iou = bbox_iou(u1.bbox, u2.bbox)
+                u_ios = bbox_ios(u1.bbox, u2.bbox)
+                if u_dist < 28.0 or u_iou >= 0.30 or u_ios >= 0.40:
+                    if u1.consecutive_hits >= u2.consecutive_hits:
+                        prune_uids.add(u2_id)
+                    else:
+                        prune_uids.add(u1_id)
+                        break
+        for uid in prune_uids:
+            if uid in self._stationary_motor_units:
+                del self._stationary_motor_units[uid]
         if self.stationary_dwell_sec > 0.0:
             density_count = sum(
                 1 for u in self._stationary_motor_units.values()
@@ -779,8 +861,8 @@ class SmartParkingTracker:
         # Moving Median Window 5 detik (25 frame @ ~5fps) — halus dan adaptif, anti-starvation
         consolidated_density = int(round(float(np.median(self._density_history))))
 
-        tw_count = max(0, self.gate_in_count - self.gate_out_count)
-        occupied = int(min(self.block_capacity, max(tw_count, consolidated_density)))
+        # Murni Direct Physical Detection (Tripwire IN/OUT dinonaktifkan)
+        occupied = int(min(self.block_capacity, consolidated_density))
         self._last_stable_occupied = occupied
 
         return self._block_stats(occupied)
@@ -999,6 +1081,13 @@ class SmartParkingTracker:
                 # Jika track kendaraan memiliki cx > 1810 px (atau cx_infer > 603.3 pada 640p), reject kendaraan dari kandidat S8.
                 cx_1080p = (cx / sx) if sx > 0 else cx
                 is_outside_s8 = (s_id == "zone_08" and cx_1080p > 1810.0)
+
+                # Filter Koordinat Vertikal Kendaraan Manuver Koridor (Y-Axis Gating):
+                # Kendaraan di koridor manuver depan berada jauh lebih bawah pada kanvas kamera (y2 > 230 pada AI canvas 640p).
+                # Pastikan proposal kendaraan dengan tapak roda bawah y2 > 230 px tidak diizinkan merebut, memicu class yield, atau mengintervensi slot barisan parkir (S1 s.d. S6).
+                y2_ai = y2 if (sy <= 0.5) else (y2 * (360.0 / 1080.0))
+                if s_id in ("zone_01", "zone_02", "zone_03", "zone_04", "zone_05", "zone_06") and y2_ai > 230.0:
+                    continue
 
                 is_vacant_slot = (state.phase == "VACANT")
                 if is_vacant_slot:
@@ -1241,6 +1330,39 @@ class SmartParkingTracker:
             geom = slot_geometries[slot_id]
             pts_scaled = geom["pts_scaled"]
 
+            # Evaluasi kontak 5-point stance probe khusus S1 (zone_01)
+            s1_has_contact = False
+            if slot_id == "zone_01":
+                slot_eff_margin = max(8.0, self.wheel_contact_margin_px)
+                for cand_t in tracks:
+                    cx1, cy1, cx2, cy2 = cand_t.bbox
+                    c_y2_ai = cy2 if (sy <= 0.5) else (cy2 * (360.0 / 1080.0))
+                    if c_y2_ai > 230.0:
+                        continue
+                    ccx = float((cx1 + cx2) / 2.0)
+                    cbw = max(1.0, cx2 - cx1)
+                    cbh = max(1.0, cy2 - cy1)
+                    c_probes = [
+                        (ccx, float(cy2)),
+                        (ccx, float(cy2 - cbh * 0.05)),
+                        (float(cx1 + cbw * 0.22), float(cy2 - cbh * 0.04)),
+                        (float(cx2 - cbw * 0.22), float(cy2 - cbh * 0.04)),
+                        (ccx, float(cy2 - cbh * 0.12)),
+                    ]
+                    c_d_probes = [cv2.pointPolygonTest(pts_scaled, pt, True) for pt in c_probes]
+                    c_d_ground = max(c_d_probes)
+                    c_lower_bbox = (cx1, cy1 + cbh * 0.5, cx2, cy2)
+                    c_lower_overlap = bbox_polygon_overlap_ratio(c_lower_bbox, pts_scaled)
+                    c_iou_anc = bbox_iou(cand_t.bbox, state.last_bbox) if state.last_bbox is not None else 0.0
+                    if (
+                        c_d_ground >= -slot_eff_margin
+                        or c_lower_overlap >= 0.15
+                        or (c_d_ground >= -12.0 and c_lower_overlap >= 0.10)
+                        or c_iou_anc >= 0.15
+                    ):
+                        s1_has_contact = True
+                        break
+
             matched_track = assigned_slot_to_track.get(slot_id)
 
             if matched_track is not None:
@@ -1275,13 +1397,23 @@ class SmartParkingTracker:
 
                 else:
                     # Kasus 3: Kendaraan benar-benar baru (atau slot dari VACANT/kosong)
-                    state.track_id = matched_track.track_id
-                    state.vehicle_class = matched_track.class_label
-                    state.first_seen_time = current_time
-                    state.dwell_duration = 0.0
-                    state.last_seen_time = current_time
-                    state.last_bbox = matched_track.bbox
-                    state.polygon_clear_since = None
+                    if slot_id == "zone_01" and state.phase == "OCCUPIED" and (state.dwell_duration >= 10.0 or state.latch_occupied):
+                        # Retensi S1: Jangan mereset dwell atau melepaskan kepemilikan mobil stasioner S1
+                        state.track_id = matched_track.track_id
+                        state.vehicle_class = matched_track.class_label
+                        state.dwell_duration = max(state.dwell_duration, 10.0)
+                        state.last_seen_time = current_time
+                        state.last_bbox = matched_track.bbox
+                        state.polygon_clear_since = None
+                        state.latch_occupied = True
+                    else:
+                        state.track_id = matched_track.track_id
+                        state.vehicle_class = matched_track.class_label
+                        state.first_seen_time = current_time
+                        state.dwell_duration = 0.0
+                        state.last_seen_time = current_time
+                        state.last_bbox = matched_track.bbox
+                        state.polygon_clear_since = None
 
                 if is_warmup:
                     # Evaluasi baseline okupansi slot pada masa cold-start:
@@ -1332,17 +1464,21 @@ class SmartParkingTracker:
                 elif state.track_id is not None and state.track_id in assigned_track_ids and not state.latch_occupied:
                     # INSTANT YIELD: Mobil ini terbukti terparkir di slot lain secara eksklusif (Exclusive 1-to-1 Assignment)
                     # Segera bebaskan slot ini kembali ke status VACANT jika belum latched!
-                    state.phase = "VACANT"
-                    state.latch_occupied = False
-                    state.is_warmup_latch = False
-                    state.track_id = None
-                    state.vehicle_class = None
-                    state.first_seen_time = None
-                    state.dwell_duration = 0.0
-                    state.leaving_since = None
-                    state.polygon_clear_since = None
-                    state.tripwire_crossed_in_time = None
-                    state.warmup_hits = 0
+                    if slot_id == "zone_01" and s1_has_contact:
+                        # Proteksi S1: Mobil silver masih terbukti kontak fisik di S1, dilarang yield ke VACANT!
+                        pass
+                    else:
+                        state.phase = "VACANT"
+                        state.latch_occupied = False
+                        state.is_warmup_latch = False
+                        state.track_id = None
+                        state.vehicle_class = None
+                        state.first_seen_time = None
+                        state.dwell_duration = 0.0
+                        state.leaving_since = None
+                        state.polygon_clear_since = None
+                        state.tripwire_crossed_in_time = None
+                        state.warmup_hits = 0
                 elif state.phase == "ENTERING":
                     # Timeout jika sinyal masuk sudah lewat tanpa kendaraan masuk poligon
                     if (
@@ -1359,7 +1495,16 @@ class SmartParkingTracker:
                     # Slot hanya boleh LEAVING setelah poligon terbukti kosong >= confirm_threshold.
                     # Gunakan threshold adaptif: 10.0 detik untuk slot latched stabil (tahan oklusi hingga 10s),
                     # atau vacant_confirm_sec (5.0s) normal.
-                    confirm_threshold = 10.0 if state.latch_occupied else state.vacant_confirm_sec
+                    confirm_threshold = 10.0 if state.latch_occupied else max(5.0, state.vacant_confirm_sec)
+
+                    # Proteksi Khusus Retensi Slot S1 Terkunci (Anti-Interferensi Koridor):
+                    # Jika S1 stasioner (dwell >= 10.0s atau latched), evaluasi apakah ada kontak 5-point stance probe mobil di S1.
+                    # Status S1 HANYA boleh berubah menjadi VACANT jika seluruh 5 titik probe kontak aspal (d_ground) mobil silver benar-benar bersih kontinu selama >= 5.0 detik berturut-turut.
+                    if slot_id == "zone_01" and (state.dwell_duration >= 10.0 or state.latch_occupied):
+                        if s1_has_contact:
+                            state.last_seen_time = current_time
+                            state.polygon_clear_since = None
+
                     if state.last_seen_time > 0 and (current_time - state.last_seen_time) > 0.5:
                         # Mulai atau lanjutkan timer poligon kosong
                         if state.polygon_clear_since is None:
@@ -1793,8 +1938,8 @@ class SmartParkingTracker:
                 valid_render = deduplicate_motorcycle_tracks(
                     candidate_render,
                     iou_thresh=0.30,
-                    ios_thresh=0.50,
-                    max_centroid_dist_px=28.0,
+                    ios_thresh=0.40,
+                    max_centroid_dist_px=38.0,
                 )
                 render_items = [(t.bbox, t.confidence) for t in valid_render]
 
@@ -1834,7 +1979,6 @@ class SmartParkingTracker:
 
         # ── 100% SINKRONISASI VISUAL-TELEMETRI MUTLAK ──────────────────────────
         # `occupied` dibaca dari parking_stats yang sudah dihitung di _update_block_mode
-        # (termasuk tripwire dominance). Render TIDAK menimpa nilai ini.
         # Kotak kuning = render_items (latched units); badge/HUD = occupied dari stats.
         # Single source of truth → visual boxes ≡ badge ≡ HUD ≡ API payload.
 
@@ -1849,17 +1993,7 @@ class SmartParkingTracker:
             label = f"{occupied}/{total} MOTOR"
             self._draw_slot_badge(canvas, label, cx, cy)
 
-        # Tripwire render (dengan flash)
-        active_tripwires = [tw for tw in tripwires if tw.active]
-        for tw in active_tripwires:
-            p1_scaled = (int(tw.p1.x * sx), int(tw.p1.y * sy))
-            p2_scaled = (int(tw.p2.x * sx), int(tw.p2.y * sy))
-            flash_until = self.tripwire_flash.get(tw.tripwire_id, 0.0)
-            is_flashing = (current_time > 0 and current_time < flash_until)
-            tw_color = (255, 255, 255) if is_flashing else (0, 165, 255)
-            cv2.line(canvas, p1_scaled, p2_scaled, tw_color, 1, cv2.LINE_AA)
-
-        # HUD 1-baris di pojok kanan atas
+        # HUD 1-baris bersih di pojok kanan atas (Tripwire IN/OUT dihilangkan total)
         hud_line = f"PARKING: {occupied}/{total} TERISI | KOSONG: {available} UNIT"
         self._draw_hud_pill_top_right(canvas, hud_line, available)
 

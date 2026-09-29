@@ -138,8 +138,6 @@ def create_app(
                     "total_slots": pt.total_slots,
                     "occupied_slots": occ,
                     "available_slots": avail,
-                    "gate_in": pt.gate_in_count,
-                    "gate_out": pt.gate_out_count,
                     "stationary_units_count": len(getattr(pt, "_stationary_motor_units", {})),
                     "slots": {},
                 }
@@ -204,8 +202,6 @@ def create_app(
                         "total_slots": pt.total_slots,
                         "occupied_slots": occ,
                         "available_slots": avail,
-                        "gate_in": pt.gate_in_count,
-                        "gate_out": pt.gate_out_count,
                         "stationary_units_count": len(getattr(pt, "_stationary_motor_units", {})),
                         "slots": {},
                     }

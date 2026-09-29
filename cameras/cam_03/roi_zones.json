@@ -47,28 +47,7 @@
       "target_classes": null
     }
   ],
-  "tripwires": [
-    {
-      "tripwire_id": "tw_01",
-      "label": "Tripwire 1",
-      "active": true,
-      "color_hex": "#FFD700",
-      "p1": {
-        "x": 1007,
-        "y": 412
-      },
-      "p2": {
-        "x": 1183,
-        "y": 509
-      },
-      "direction": "BOTH",
-      "target_classes": [
-        "motorcycle",
-        "bicycle"
-      ],
-      "debounce_sec": 3.0
-    }
-  ],
+  "tripwires": [],
   "barriers": [],
   "exclusion_masks": [],
   "safe_walkways": [],
