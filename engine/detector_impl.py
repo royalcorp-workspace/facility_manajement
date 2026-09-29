@@ -136,8 +136,7 @@ class YOLO11nDetector(DetectorBase):
                     class_id = 2  # COCO class_id untuk car
             elif label in ("truck", "bus"):
                 area = w * h
-                score_car = float(scores[2]) if len(scores) > 2 else 0.0
-                if ((w <= 110.0 and h <= 110.0) or (area <= 10000.0 and 0.4 <= aspect_ratio <= 2.2)) and score_car >= 0.15:
+                if (w <= 110.0 and h <= 110.0) or (area <= 10000.0 and 0.4 <= aspect_ratio <= 2.2):
                     label = "car"
                     class_id = 2  # COCO class_id untuk car
 

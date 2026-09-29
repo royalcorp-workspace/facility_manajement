@@ -337,29 +337,70 @@ def test_case_6_seven_slots_occupied_s4_s8_recovery():
     assert tracker.slot_states["zone_08"].occupied, "Slot S8 (mobil putih) WAJIB OCCUPIED!"
     assert not tracker.slot_states["zone_02"].occupied, "Slot S2 harus tetap VACANT!"
 
-    # Uji visual HUD string
-    occ_slots = [
+    # Uji visual HUD string 7/8
+    occ_slots_7 = [
         f"S{s.slot_num}"
         for s in sorted(tracker.slot_states.values(), key=lambda x: x.slot_num)
         if s.phase == "OCCUPIED"
     ]
-    occ_str = ", ".join(occ_slots)
-    expected_str = "S1, S3, S4, S5, S6, S7, S8"
-    assert occ_str == expected_str, f"HUD occupied mismatch: expected '{expected_str}', got '{occ_str}'"
+    occ_str_7 = ", ".join(occ_slots_7)
+    assert occ_str_7 == "S1, S3, S4, S5, S6, S7, S8"
+    print(f"  ✓ PASS: Kuota awal terverifikasi 7/8! Status HUD: PARKING: 7/8 OCCUPIED | TERISI: [{occ_str_7}]")
+
+    # Fase B: Truk pickup Suzuki putih (class_label='truck') masuk menempati Slot S2
+    s2_poly = next(p for p in roi_cfg.polygons if p.zone_id == "zone_02")
+    s2_pts = np.array([[p.x / 3.0, p.y / 3.0] for p in s2_poly.points])
+    s2_cx = float(np.mean(s2_pts[:, 0]))
+    s2_max_y = float(np.max(s2_pts[:, 1]))
+    pickup_s2 = TrackResult(
+        track_id=202,
+        class_label="truck",
+        class_id=7,
+        confidence=0.76,
+        bbox=(s2_cx - 20.0, s2_max_y - 48.0, s2_cx + 20.0, s2_max_y - 2.0),
+        is_confirmed=True,
+    )
+    tracks_8 = tracks + [pickup_s2]
+
+    # Update frame T=420.0s (pickup masuk) & T=431.0s (dwell 11s)
+    tracker.update(tracks_8, roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=420.0)
+    stats_8 = tracker.update(tracks_8, roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=431.0)
+
+    assert stats_8["occupied_slots"] == 8, f"Expected 8 occupied slots, got {stats_8['occupied_slots']}"
+    assert stats_8["available_slots"] == 0, f"Expected 0 available slots, got {stats_8['available_slots']}"
+    assert tracker.slot_states["zone_02"].occupied, "Slot S2 (pickup Suzuki) WAJIB OCCUPIED!"
+
+    occ_slots_8 = [
+        f"S{s.slot_num}"
+        for s in sorted(tracker.slot_states.values(), key=lambda x: x.slot_num)
+        if s.phase == "OCCUPIED"
+    ]
+    occ_str_8 = ", ".join(occ_slots_8)
+    expected_8 = "S1, S2, S3, S4, S5, S6, S7, S8"
+    assert occ_str_8 == expected_8, f"HUD mismatch: expected '{expected_8}', got '{occ_str_8}'"
 
     canvas = np.zeros((360, 640, 3), dtype=np.uint8)
     tracker.render_overlay(
         canvas=canvas,
         polygons=roi_cfg.polygons,
         tripwires=roi_cfg.tripwires,
-        tracks=tracks,
+        tracks=tracks_8,
         scale_x=3.0,
         scale_y=3.0,
-        parking_stats=stats,
-        current_time=411.5,
+        parking_stats=stats_8,
+        current_time=431.0,
     )
+    print(f"  ✓ PASS: Kuota penuh 8/8 terverifikasi! Status HUD: PARKING: 8/8 OCCUPIED | TERISI: [{occ_str_8}]")
 
-    print(f"  ✓ PASS: Kuota terverifikasi 7/8! Status HUD: PARKING: 7/8 OCCUPIED | TERISI: [{occ_str}]")
+    # Fase C: Pickup Suzuki S2 keluar/pergi (tracks kembali ke 7 mobil)
+    # Hysteresis kosong selama >= 11 detik (confirm_threshold 10s + exit_grace 3s)
+    tracker.update(tracks, roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=432.0)
+    tracker.update(tracks, roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=443.0)
+    stats_exit = tracker.update(tracks, roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=448.0)
+
+    assert not tracker.slot_states["zone_02"].occupied, "Slot S2 harus kembali ke VACANT setelah pickup pergi!"
+    assert stats_exit["occupied_slots"] == 7
+    print("  ✓ PASS: Hysteresis exit berhasil! Slot S2 kembali ke VACANT setelah pickup meninggalkan petak.")
 
 
 if __name__ == "__main__":

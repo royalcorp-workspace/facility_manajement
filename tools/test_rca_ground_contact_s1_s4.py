@@ -226,6 +226,44 @@ def test_warmup_latch_auto_reset():
     print("  [PASS] Slot ter-latch otomatis pulih ke VACANT setelah poligon bersih >= 4.0 detik pasca-warmup.")
 
 
+def test_s2_pickup_truck_occupancy_and_exit():
+    print("\n[TEST 7] Pickup / Truk Ringan di Slot S2 (zone_02 Occupancy & Exit)...")
+    tracker = SmartParkingTracker(dwell_threshold_sec=10.0)
+    roi_cfg = load_roi_zones(Path("cameras/cam_01/roi_zones.json"))
+
+    s2_poly = next(p for p in roi_cfg.polygons if p.zone_id == "zone_02")
+    s2_pts = np.array([[p.x / 3.0, p.y / 3.0] for p in s2_poly.points])
+    s2_cx = float(np.mean(s2_pts[:, 0]))
+    s2_max_y = float(np.max(s2_pts[:, 1]))
+
+    # Pickup Suzuki putih di S2 (class_label='truck', confidence=0.76)
+    pickup_track = TrackResult(
+        track_id=202,
+        class_label="truck",
+        class_id=7,
+        confidence=0.76,
+        bbox=(s2_cx - 20.0, s2_max_y - 48.0, s2_cx + 20.0, s2_max_y - 2.0),
+        is_confirmed=True,
+    )
+
+    # 1. Pickup masuk dan dwell 12s -> S2 OCCUPIED
+    tracker.update([pickup_track], roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=100.0)
+    stats = tracker.update([pickup_track], roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=112.0)
+
+    assert tracker.slot_states["zone_02"].occupied, "Slot S2 WAJIB OCCUPIED oleh pickup Suzuki!"
+    assert stats["occupied_slots"] == 1
+    print("  [PASS] Pickup Suzuki di Slot S2 berhasil diakuisisi OCCUPIED secara stabil.")
+
+    # 2. Pickup meninggalkan petak parkir -> setelah hysteresis exit, S2 kembali VACANT
+    tracker.update([], roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=113.0)
+    tracker.update([], roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=124.0)
+    stats_exit = tracker.update([], roi_cfg.polygons, scale_x=3.0, scale_y=3.0, current_time=128.0)
+
+    assert not tracker.slot_states["zone_02"].occupied, "Slot S2 harus kembali ke VACANT setelah pickup pergi!"
+    assert stats_exit["occupied_slots"] == 0
+    print("  [PASS] Slot S2 berhasil kembali ke VACANT setelah pickup pergi.")
+
+
 if __name__ == "__main__":
     test_s1_low_confidence_shadow_rejection()
     test_s4_s5_perspective_crosstalk_rejection()
@@ -233,6 +271,7 @@ if __name__ == "__main__":
     test_s1_truck_shadow_rejection()
     test_s8_adjacent_grey_car_anti_crosstalk()
     test_warmup_latch_auto_reset()
+    test_s2_pickup_truck_occupancy_and_exit()
     print("\n==================================================================")
-    print("  ALL 6 ROOT CAUSE VALIDATION TESTS PASSED! [OK]")
+    print("  ALL 7 ROOT CAUSE VALIDATION TESTS PASSED! [OK]")
     print("==================================================================")
