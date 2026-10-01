@@ -690,8 +690,8 @@ class CarSlotTracker:
                 # Pengetatan khusus Slot S2 (Anti-Claim Encroachment & Bodi Truk Koridor)
                 if s_id == "zone_02":
                     aspect_ratio = bw / bh
-                    # Tolak proposal yang memiliki rasio aspek memanjang horizontal khas bodi samping / moncong truk
-                    if aspect_ratio >= 1.15 or bw > 55.0:
+                    # Tolak proposal yang memiliki rasio aspek memanjang horizontal khas bodi samping truk atau melebihi lebar mobil wajar
+                    if aspect_ratio > 1.30 or bw > 85.0:
                         continue
 
                     # Wajibkan kontak tapak tanah positif (d_ground >= 0.0 px)
@@ -704,6 +704,14 @@ class CarSlotTracker:
                     else:
                         if d_ground < 0.0 and iou_anchor < 0.20:
                             continue
+
+                # Pengetatan khusus Slot S3 (Anti-Crosstalk Petak Kosong S3 dari Mobil S2)
+                if s_id == "zone_03" and is_vacant_slot:
+                    min_x_s3 = float(np.min(pts_scaled[:, 0])) if len(pts_scaled) > 0 else 148.0
+                    # Wajibkan titik tapak kontak tanah strictly di dalam poligon (d_ground >= 0.0 px)
+                    # dan tolak jika centroid mobil berada di luar span kiri poligon S3 (cx < 148.0 px)
+                    if d_ground < 0.0 or cx < min_x_s3 or cx < 148.0:
+                        continue
 
                 if is_vacant_slot:
                     if s_id == "zone_04" and vt.class_label in ("car", "truck") and (lower_overlap >= 0.15 or d_ground >= -eff_margin):
