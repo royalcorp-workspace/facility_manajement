@@ -253,15 +253,15 @@ class ParkingVisualizer:
                 render_items = [
                     (u.bbox, u.confidence)
                     for u in render_units
-                    if (u.is_latched or (self.stationary_dwell_sec == 0.0) or (current_time > 0 and (current_time - u.first_seen_time) >= 2.0))
-                    and (current_time <= 0 or (current_time - u.last_seen_time) <= 10.0)
+                    if (u.is_latched or (self.stationary_dwell_sec == 0.0) or (current_time > 0 and (current_time - u.first_seen_time) >= 1.2))
+                    and (current_time <= 0 or (current_time - u.last_seen_time) <= 12.0)
                     and is_valid_motorcycle_anatomy(u.bbox, sx, sy)
                     and (drum_excl_x_render is None or u.centroid[0] >= drum_excl_x_render)
                 ]
             else:
                 candidate_render: List[TrackResult] = []
                 for track in tracks:
-                    if getattr(track, "class_label", None) == "motorcycle" and (track.is_confirmed or current_time == 0.0):
+                    if getattr(track, "class_label", None) in ("motorcycle", "bicycle") and (track.is_confirmed or current_time == 0.0):
                         rx1, ry1, rx2, ry2 = track.bbox
                         cx = float((rx1 + rx2) / 2.0)
                         wheel_y = float(ry2)
@@ -273,16 +273,18 @@ class ParkingVisualizer:
                         if not is_valid_motorcycle_anatomy(track.bbox, sx, sy):
                             continue
 
-                        wheel_in = cv2.pointPolygonTest(pts_zone, wheel_pt, False) >= 0
+                        wheel_in = cv2.pointPolygonTest(pts_zone, wheel_pt, True) >= -12.0
                         if not wheel_in:
                             continue
                         candidate_render.append(track)
 
+                scale_factor = max(1.0, sx / (1.0 / 3.0))
                 valid_render = deduplicate_motorcycle_tracks(
                     candidate_render,
-                    iou_thresh=0.30,
-                    ios_thresh=0.40,
-                    max_centroid_dist_px=38.0,
+                    iou_thresh=0.55,
+                    ios_thresh=0.85,
+                    min_dx_px=6.0 * scale_factor,
+                    cumulative_overlap_thresh=0.70,
                 )
                 render_items = [(t.bbox, t.confidence) for t in valid_render]
 

@@ -121,14 +121,14 @@ def is_valid_motorcycle_anatomy(
     bbox: Tuple[float, float, float, float],
     scale_x: float,
     scale_y: float,
-    max_w_1080p: float = 260.0,
-    max_h_1080p: float = 360.0,
+    max_w_1080p: float = 580.0,
+    max_h_1080p: float = 380.0,
     min_w_1080p: float = 20.0,
     min_h_1080p: float = 25.0,
-    max_area_1080p: float = 65000.0,
+    max_area_1080p: float = 140000.0,
     min_area_360p: float = 800.0,
-    min_hw_ratio: float = 0.65,
-    max_hw_ratio: float = 2.00,
+    min_hw_ratio: float = 0.35,
+    max_hw_ratio: float = 2.25,
 ) -> bool:
     sx = (1.0 / scale_x) if scale_x > 1.0 else scale_x
     sy = (1.0 / scale_y) if scale_y > 1.0 else scale_y
@@ -161,10 +161,6 @@ def is_valid_motorcycle_anatomy(
 
 
 class MotorcycleBlockTracker:
-    """
-    Dedicated tracker for dense motorcycle parking areas (cam_03).
-    """
-
     def __init__(
         self,
         block_capacity: int = 30,
@@ -247,6 +243,7 @@ class MotorcycleBlockTracker:
             cy = float((ry1 + ry2) / 2.0)
             wheel_y = float(ry2)
             wheel_pt = (int(cx), int(wheel_y))
+            center_pt = (int(cx), int(cy))
 
             if drum_excl_x_scaled is not None and int(cx) < drum_excl_x_scaled:
                 continue
@@ -255,26 +252,31 @@ class MotorcycleBlockTracker:
                 continue
 
             # Multi-Tier Thresholding:
-            # - Ambang retensi motor terkunci (is_latched): conf >= 0.22
-            # - Ambang akuisisi motor baru: conf >= 0.30
+            # - Ambang retensi motor terkunci (is_latched): conf >= 0.12
+            # - Ambang akuisisi motor baru: conf >= 0.14
             is_near_latched = False
             for unit in self._stationary_motor_units.values():
                 if unit.is_latched and math.hypot(cx - unit.centroid[0], cy - unit.centroid[1]) < anchor_match_dist:
                     is_near_latched = True
                     break
 
-            min_conf = 0.22 if is_near_latched else 0.30
+            min_conf = 0.12 if is_near_latched else 0.14
             if track.confidence < min_conf:
                 continue
 
-            # Kontak roda pada batas poligon dengan toleransi hingga -8.0px
-            wheel_in = cv2.pointPolygonTest(pts_scaled, wheel_pt, True) >= -8.0
-            if not wheel_in:
+            # Kontak roda pada batas poligon dengan toleransi hingga -12.0px & Dual Containment
+            d_wheel = float(cv2.pointPolygonTest(pts_scaled, wheel_pt, True))
+            if d_wheel < -12.0:
                 continue
 
             overlap_ratio = bbox_polygon_overlap_ratio(track.bbox, pts_scaled)
-            if overlap_ratio < 0.20:
-                continue
+            if d_wheel >= 0.0:
+                if overlap_ratio < 0.15:
+                    continue
+            else:
+                d_center = float(cv2.pointPolygonTest(pts_scaled, center_pt, True))
+                if d_center < -6.0 and overlap_ratio < 0.05:
+                    continue
 
             candidate_tracks.append(track)
 
@@ -286,7 +288,7 @@ class MotorcycleBlockTracker:
             cumulative_overlap_thresh=0.70,
         )
 
-        UNIT_LATCH_SEC = 2.0
+        UNIT_LATCH_SEC = 1.2
         UNIT_TTL_SEC = 12.0
 
         matched_unit_ids: Set[int] = set()
@@ -316,7 +318,7 @@ class MotorcycleBlockTracker:
                 unit.missed_frames = 0
                 if not unit.is_latched:
                     elapsed_visible = current_time - unit.first_seen_time
-                    if elapsed_visible >= UNIT_LATCH_SEC or is_warmup:
+                    if elapsed_visible >= UNIT_LATCH_SEC or unit.consecutive_hits >= 2 or is_warmup:
                         unit.is_latched = True
                 matched_unit_ids.add(best_unit_id)
             else:
@@ -350,7 +352,7 @@ class MotorcycleBlockTracker:
                 if time_since_last_seen > UNIT_TTL_SEC:
                     to_delete.append(uid)
             else:
-                if time_since_last_seen > 1.0:
+                if time_since_last_seen > 3.0:
                     to_delete.append(uid)
 
         for uid in to_delete:
