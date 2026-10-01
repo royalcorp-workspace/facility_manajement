@@ -112,15 +112,25 @@ def bbox_ios(box_a: Tuple[float, float, float, float], box_b: Tuple[float, float
 
 def deduplicate_motorcycle_tracks(
     tracks: List[TrackResult],
-    iou_thresh: float = 0.30,
-    ios_thresh: float = 0.40,
-    max_centroid_dist_px: float = 38.0,
+    iou_thresh: float = 0.55,
+    ios_thresh: float = 0.85,
+    min_dx_px: float = 12.0,
+    cumulative_overlap_thresh: float = 0.70,
+    max_centroid_dist_px: Optional[float] = None,
 ) -> List[TrackResult]:
     """
-    Deduplikasi spasial cerdas untuk kendaraan roda dua (motorcycle / bicycle):
+    Deduplikasi spasial cerdas untuk kendaraan roda dua (motorcycle / bicycle) padat/berhimpitan:
     1. Sort kandidat berdasarkan confidence tertinggi.
-    2. Local NMS: tolak jika IoU >= iou_thresh atau IoS >= ios_thresh atau jarak centroid <= max_centroid_dist_px.
-    3. Multi-Box Cumulative Overlap Rejection: tolak jika >= 50% luas kotak tertutup oleh gabungan kotak yang sudah diterima.
+    2. Filter Kotak Anak: tolak jika IoS >= ios_thresh (0.85) -> pecahan anak (jok/stang/roda) dari motor yang sama.
+    3. Relaksasi Berdampingan:
+       - Jika IoU >= iou_thresh (0.55): tolak sebagai duplikat.
+       - Jika ada overlap signifikan (IoU >= 0.20 atau IoS >= 0.30):
+         Pertahankan sebagai 2 unit terpisah jika ada separasi sumbu-X (|cx_A - cx_B| >= min_dx_px)
+         ATAU separasi titik tumpu roda (|y2_A - y2_B| >= 8.0).
+         Tolak sebagai duplikat jika tidak ada separasi fisik (|cx_A - cx_B| < min_dx_px and |y2_A - y2_B| < 8.0).
+       - Jika max_centroid_dist_px diberikan dan jarak centroid <= max_centroid_dist_px tanpa separasi, tolak.
+    4. Multi-Box Cumulative Overlap Rejection: tolak jika >= cumulative_overlap_thresh (0.70) luas kotak tertutup
+       oleh gabungan kotak yang sudah diterima.
     """
     sorted_tracks = sorted(tracks, key=lambda t: t.confidence, reverse=True)
     deduped: List[TrackResult] = []
@@ -128,6 +138,7 @@ def deduplicate_motorcycle_tracks(
     for cand in sorted_tracks:
         c_cx = float((cand.bbox[0] + cand.bbox[2]) / 2.0)
         c_cy = float((cand.bbox[1] + cand.bbox[3]) / 2.0)
+        c_y2 = float(cand.bbox[3])
         is_dup = False
 
         # 1. Pairwise checks
@@ -136,8 +147,28 @@ def deduplicate_motorcycle_tracks(
             ios = bbox_ios(cand.bbox, acc.bbox)
             a_cx = float((acc.bbox[0] + acc.bbox[2]) / 2.0)
             a_cy = float((acc.bbox[1] + acc.bbox[3]) / 2.0)
-            dist_px = math.hypot(c_cx - a_cx, c_cy - a_cy)
-            if iou >= iou_thresh or ios >= ios_thresh or dist_px <= max_centroid_dist_px:
+            a_y2 = float(acc.bbox[3])
+
+            dx = abs(c_cx - a_cx)
+            dy2 = abs(c_y2 - a_y2)
+
+            # Filter Kotak Anak: jika IoS >= ios_thresh (0.85), kotak kecil adalah pecahan
+            if ios >= ios_thresh:
+                is_dup = True
+                break
+
+            # Jika IoU sangat tinggi (>= iou_thresh), tolak sebagai duplikat
+            if iou >= iou_thresh:
+                is_dup = True
+                break
+
+            # Relaksasi Berdampingan:
+            # Jika ada overlap signifikan dan tidak ada separasi fisik sumbu-X maupun tapak roda
+            if (iou >= 0.20 or ios >= 0.30) and (dx < min_dx_px and dy2 < 8.0):
+                is_dup = True
+                break
+
+            if max_centroid_dist_px is not None and math.hypot(c_cx - a_cx, c_cy - a_cy) <= max_centroid_dist_px and dx < min_dx_px and dy2 < 8.0:
                 is_dup = True
                 break
 
@@ -157,13 +188,14 @@ def deduplicate_motorcycle_tracks(
                 if ix2 > ix1 and iy2 > iy1:
                     mask[iy1:iy2, ix1:ix2] = 1
             covered_ratio = float(np.sum(mask)) / float(cand_w * cand_h)
-            if covered_ratio >= 0.50:
+            if covered_ratio >= cumulative_overlap_thresh:
                 is_dup = True
 
         if not is_dup:
             deduped.append(cand)
 
     return deduped
+
 
 
 def is_valid_motorcycle_anatomy(
@@ -249,7 +281,12 @@ class SmartParkingTracker:
     ) -> None:
         self._total_slots_override = total_slots
         self.dwell_threshold_sec = dwell_threshold_sec
-        self.vehicle_classes = vehicle_classes or self.DEFAULT_VEHICLE_CLASSES
+        if vehicle_classes is not None:
+            self.vehicle_classes = set(vehicle_classes)
+        elif parking_mode == "motorcycle_block":
+            self.vehicle_classes = {"motorcycle", "bicycle"}
+        else:
+            self.vehicle_classes = set(self.DEFAULT_VEHICLE_CLASSES)
         self.parking_mode = parking_mode
         self.block_capacity = block_capacity
         self.stationary_dwell_sec = stationary_dwell_sec
@@ -701,9 +738,9 @@ class SmartParkingTracker:
             drum_excl_x_scaled = int(self._block_exclusion_x_1080p * sx)
 
         scale_factor = max(1.0, sx / (1.0 / 3.0))
+        anchor_match_dist = 10.0 * scale_factor
 
         candidate_tracks: List[TrackResult] = []
-        near_dist_thresh = 38.0 * scale_factor
         for track in vehicle_tracks:
             rx1, ry1, rx2, ry2 = track.bbox
             cx = float((rx1 + rx2) / 2.0)
@@ -718,15 +755,15 @@ class SmartParkingTracker:
                 continue
 
             # Multi-Tier Thresholding:
-            # - Ambang retensi motor terkunci (is_latched): conf >= 0.20
-            # - Ambang akuisisi motor baru: conf >= 0.28 (akomodasi variasi pencahayaan lapangan)
+            # - Ambang retensi motor terkunci (is_latched): conf >= 0.22
+            # - Ambang akuisisi motor baru: conf >= 0.30
             is_near_latched = False
             for unit in self._stationary_motor_units.values():
-                if unit.is_latched and math.hypot(cx - unit.centroid[0], cy - unit.centroid[1]) < 30.0:
+                if unit.is_latched and math.hypot(cx - unit.centroid[0], cy - unit.centroid[1]) < anchor_match_dist:
                     is_near_latched = True
                     break
 
-            min_conf = 0.20 if is_near_latched else 0.28
+            min_conf = 0.22 if is_near_latched else 0.30
             if track.confidence < min_conf:
                 continue
 
@@ -743,13 +780,14 @@ class SmartParkingTracker:
 
         valid_tracks = deduplicate_motorcycle_tracks(
             candidate_tracks,
-            iou_thresh=0.30,
-            ios_thresh=0.40,
-            max_centroid_dist_px=28.0,
+            iou_thresh=0.55,
+            ios_thresh=0.85,
+            min_dx_px=6.0 * scale_factor,
+            cumulative_overlap_thresh=0.70,
         )
 
         UNIT_LATCH_SEC = 2.0   
-        UNIT_TTL_SEC = 10.0    
+        UNIT_TTL_SEC = 12.0    
 
         matched_unit_ids: Set[int] = set()
 
@@ -758,7 +796,7 @@ class SmartParkingTracker:
             cand_cy = float((cand.bbox[1] + cand.bbox[3]) / 2.0)
 
             best_unit_id = None
-            best_dist = 30.0
+            best_dist = anchor_match_dist
 
             for uid, unit in self._stationary_motor_units.items():
                 if uid in matched_unit_ids:
@@ -833,7 +871,7 @@ class SmartParkingTracker:
                 u_dist = math.hypot(u1.centroid[0] - u2.centroid[0], u1.centroid[1] - u2.centroid[1])
                 u_iou = bbox_iou(u1.bbox, u2.bbox)
                 u_ios = bbox_ios(u1.bbox, u2.bbox)
-                if u_dist < 28.0 or u_iou >= 0.30 or u_ios >= 0.40:
+                if u_dist < (6.0 * scale_factor) or u_iou >= 0.55 or u_ios >= 0.85:
                     if u1.consecutive_hits >= u2.consecutive_hits:
                         prune_uids.add(u2_id)
                     else:
@@ -1904,7 +1942,7 @@ class SmartParkingTracker:
                     (u.bbox, u.confidence)
                     for u in render_units
                     if (u.is_latched or (self.stationary_dwell_sec == 0.0) or (current_time > 0 and (current_time - u.first_seen_time) >= 2.0))
-                    and (current_time <= 0 or (current_time - u.last_seen_time) <= 10.0)
+                    and (current_time <= 0 or (current_time - u.last_seen_time) <= 12.0)
                     and is_valid_motorcycle_anatomy(u.bbox, sx, sy)
                     and (drum_excl_x_render is None or u.centroid[0] >= drum_excl_x_render)
                 ]
@@ -1935,11 +1973,13 @@ class SmartParkingTracker:
 
                     candidate_render.append(track)
 
+                scale_factor_render = max(1.0, sx / (1.0 / 3.0))
                 valid_render = deduplicate_motorcycle_tracks(
                     candidate_render,
-                    iou_thresh=0.30,
-                    ios_thresh=0.40,
-                    max_centroid_dist_px=38.0,
+                    iou_thresh=0.55,
+                    ios_thresh=0.85,
+                    min_dx_px=6.0 * scale_factor_render,
+                    cumulative_overlap_thresh=0.70,
                 )
                 render_items = [(t.bbox, t.confidence) for t in valid_render]
 
