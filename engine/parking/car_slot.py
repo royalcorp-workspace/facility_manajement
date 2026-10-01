@@ -22,6 +22,68 @@ from engine.parking.spatial import bbox_ios, bbox_polygon_overlap_ratio
 from engine.tracker_interface import TrackResult
 
 
+def suppress_corridor_child_boxes(
+    tracks: List[TrackResult],
+    all_frame_tracks: Optional[List[TrackResult]] = None,
+    sy: float = 1.0,
+) -> List[TrackResult]:
+    if not tracks:
+        return []
+
+    parent_source = all_frame_tracks if all_frame_tracks is not None else tracks
+    parent_boxes: List[Tuple[float, float, float, float]] = []
+
+    for t in parent_source:
+        bx1, by1, bx2, by2 = t.bbox
+        t_scale = (360.0 / 1080.0) if (by2 > 360.0 or bx2 > 640.0) else 1.0
+        y2_ai = by2 * t_scale
+        bw_ai = max(0.0, (bx2 - bx1) * t_scale)
+        bh_ai = max(0.0, (by2 - by1) * t_scale)
+        area_ai = bw_ai * bh_ai
+
+        # Kriteria B_parent: y2_parent >= 225.0 px ATAU Area(B_parent) >= 18000 px²
+        if y2_ai >= 225.0 or area_ai >= 18000.0:
+            parent_boxes.append((bx1, by1, bx2, by2))
+
+    if not parent_boxes:
+        return tracks
+
+    surviving_tracks: List[TrackResult] = []
+    for t in tracks:
+        bx1, by1, bx2, by2 = t.bbox
+        bw = max(0.0, bx2 - bx1)
+        bh = max(0.0, by2 - by1)
+        area_i = bw * bh
+        if area_i <= 0.0:
+            continue
+
+        is_child = False
+        for px1, py1, px2, py2 in parent_boxes:
+            if (bx1, by1, bx2, by2) == (px1, py1, px2, py2):
+                continue
+            parent_area = max(1.0, (px2 - px1) * (py2 - py1))
+            if area_i >= parent_area:
+                continue
+
+            ix1 = max(bx1, px1)
+            iy1 = max(by1, py1)
+            ix2 = min(bx2, px2)
+            iy2 = min(by2, py2)
+            inter_w = max(0.0, ix2 - ix1)
+            inter_h = max(0.0, iy2 - iy1)
+            inter_area = inter_w * inter_h
+
+            ios = inter_area / area_i
+            if ios >= 0.65:
+                is_child = True
+                break
+
+        if not is_child:
+            surviving_tracks.append(t)
+
+    return surviving_tracks
+
+
 class CarSlotTracker:
     DEFAULT_VEHICLE_CLASSES = {"car", "truck", "bus"}
 
@@ -54,6 +116,7 @@ class CarSlotTracker:
         self.corridor_obstruction_dwell_sec = float(corridor_obstruction_dwell_sec)
         self.corridor_shift_threshold_px = float(corridor_shift_threshold_px)
         self._corridor_vehicles: Dict[int, Dict[str, Any]] = {}
+        self._s1_corridor_last_blocked_time: float = -999.0
 
         self.slot_states: Dict[str, SlotState] = {}
         self._last_candidates: List[Tuple[float, str, int]] = []
@@ -453,6 +516,7 @@ class CarSlotTracker:
             for t in tracks
             if (t.is_confirmed or is_warmup) and (t.class_label in self.vehicle_classes)
         ]
+        vehicle_tracks = suppress_corridor_child_boxes(vehicle_tracks, all_frame_tracks=tracks, sy=sy)
 
         slot_geometries: Dict[str, Dict[str, Any]] = {}
         for idx, slot in enumerate(active_slots):
@@ -622,10 +686,29 @@ class CarSlotTracker:
                     continue
 
                 is_vacant_slot = (state.phase == "VACANT")
+
+                # Pengetatan khusus Slot S2 (Anti-Claim Encroachment & Bodi Truk Koridor)
+                if s_id == "zone_02":
+                    aspect_ratio = bw / bh
+                    # Tolak proposal yang memiliki rasio aspek memanjang horizontal khas bodi samping / moncong truk
+                    if aspect_ratio >= 1.15 or bw > 55.0:
+                        continue
+
+                    # Wajibkan kontak tapak tanah positif (d_ground >= 0.0 px)
+                    if is_vacant_slot:
+                        if d_ground < 0.0:
+                            continue
+                        # Tapak bawah y2 <= 195.0 px (kecuali stance probe solid di dalam petak d_ground >= 1.0)
+                        if y2_ai > 195.0 and d_ground < 1.0:
+                            continue
+                    else:
+                        if d_ground < 0.0 and iou_anchor < 0.20:
+                            continue
+
                 if is_vacant_slot:
-                    if s_id in ("zone_02", "zone_04") and vt.class_label in ("car", "truck") and (lower_overlap >= 0.15 or d_ground >= -eff_margin):
+                    if s_id == "zone_04" and vt.class_label in ("car", "truck") and (lower_overlap >= 0.15 or d_ground >= -eff_margin):
                         acq_thresh = min(0.20, self.acquisition_conf_thresh)
-                    elif vt.class_label in ("car", "truck") and s_id != "zone_01" and lower_overlap >= 0.15:
+                    elif vt.class_label in ("car", "truck") and s_id not in ("zone_01", "zone_02") and lower_overlap >= 0.15:
                         acq_thresh = min(0.20, self.acquisition_conf_thresh)
                     else:
                         acq_thresh = self.acquisition_conf_thresh
@@ -868,6 +951,33 @@ class CarSlotTracker:
                         return True
             return False
 
+        # Deteksi kendaraan koridor besar yang memotong kolom bayangan ROI_S1:
+        # ROI_S1 = {(x, y) | x in [0, 180], y >= 170}
+        # Kriteria potongan: x1 <= 180, x2 >= 50, dan y2 >= 190 (skala 640p)
+        s1_shadow_blocked = False
+        for ct in tracks:
+            cx1, cy1, cx2, cy2 = ct.bbox
+            ct_scale = (360.0 / 1080.0) if (cy2 > 360.0 or cx2 > 640.0) else 1.0
+            cx1_ai = cx1 * ct_scale
+            cx2_ai = cx2 * ct_scale
+            cy1_ai = cy1 * ct_scale
+            cy2_ai = cy2 * ct_scale
+            cw_ai = max(0.0, cx2_ai - cx1_ai)
+            ch_ai = max(0.0, cy2_ai - cy1_ai)
+            c_area_ai = cw_ai * ch_ai
+
+            is_large_corridor = (
+                cy2_ai >= 225.0
+                or c_area_ai >= 18000.0
+                or getattr(ct, "class_label", None) in ("truck", "bus")
+            )
+            if is_large_corridor and (cx1_ai <= 180.0 and cx2_ai >= 50.0 and cy2_ai >= 190.0):
+                s1_shadow_blocked = True
+                break
+
+        if s1_shadow_blocked:
+            self._s1_corridor_last_blocked_time = current_time
+
         for slot in active_slots:
             slot_id = slot.zone_id
             state = self.slot_states[slot_id]
@@ -1016,8 +1126,10 @@ class CarSlotTracker:
                     confirm_threshold = 10.0 if state.latch_occupied else max(5.0, state.vacant_confirm_sec)
 
                     is_occluded = is_slot_occluded_by_corridor(geom)
+                    s1_corridor_blocked = (slot_id == "zone_01" and s1_shadow_blocked)
+
                     if state.dwell_duration >= 10.0 or state.latch_occupied:
-                        if (slot_id == "zone_01" and s1_has_contact) or is_occluded:
+                        if (slot_id == "zone_01" and (s1_has_contact or s1_corridor_blocked)) or is_occluded:
                             state.last_seen_time = current_time
                             state.polygon_clear_since = None
                             state.latch_occupied = True
@@ -1038,24 +1150,42 @@ class CarSlotTracker:
                             state.tripwire_crossed_in_time = None
                             state.warmup_hits = 0
                         elif (current_time - state.polygon_clear_since) >= confirm_threshold:
-                            state.phase = "LEAVING"
-                            state.leaving_since = current_time
-                            state.polygon_clear_since = None
+                            # Khusus S1: Status S1 HANYA boleh bertransisi ke LEAVING/VACANT jika
+                            # koridor depan bersih kontinu >= 4.0 detik DAN aspal petak S1 kosong kontinu >= 3.0 detik
+                            if slot_id == "zone_01":
+                                corridor_clean = (current_time - self._s1_corridor_last_blocked_time) >= 4.0
+                                aspal_clear = (current_time - state.polygon_clear_since) >= 3.0
+                                if corridor_clean and aspal_clear:
+                                    state.phase = "LEAVING"
+                                    state.leaving_since = current_time
+                                    state.polygon_clear_since = None
+                            else:
+                                state.phase = "LEAVING"
+                                state.leaving_since = current_time
+                                state.polygon_clear_since = None
                     else:
                         state.polygon_clear_since = None
                 elif state.phase == "LEAVING":
-                    leave_time = state.leaving_since if state.leaving_since is not None else state.last_seen_time
-                    if leave_time > 0 and (current_time - leave_time) >= state.exit_grace_sec:
-                        state.phase = "VACANT"
-                        state.latch_occupied = False
-                        state.is_warmup_latch = False
-                        state.track_id = None
-                        state.vehicle_class = None
-                        state.first_seen_time = None
-                        state.dwell_duration = 0.0
+                    # Khusus S1: jika koridor terblokir kembali sebelum exit grace selesai, bekukan kembali
+                    if slot_id == "zone_01" and (current_time - self._s1_corridor_last_blocked_time < 4.0):
+                        state.phase = "OCCUPIED"
+                        state.last_seen_time = current_time
+                        state.polygon_clear_since = None
                         state.leaving_since = None
-                        state.tripwire_crossed_in_time = None
-                        state.warmup_hits = 0
+                        state.latch_occupied = True
+                    else:
+                        leave_time = state.leaving_since if state.leaving_since is not None else state.last_seen_time
+                        if leave_time > 0 and (current_time - leave_time) >= state.exit_grace_sec:
+                            state.phase = "VACANT"
+                            state.latch_occupied = False
+                            state.is_warmup_latch = False
+                            state.track_id = None
+                            state.vehicle_class = None
+                            state.first_seen_time = None
+                            state.dwell_duration = 0.0
+                            state.leaving_since = None
+                            state.tripwire_crossed_in_time = None
+                            state.warmup_hits = 0
                 elif state.phase == "VACANT":
                     if state.last_seen_time > 0 and (current_time - state.last_seen_time) > 2.0:
                         state.track_id = None
