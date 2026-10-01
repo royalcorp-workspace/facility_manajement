@@ -30,7 +30,7 @@ def deduplicate_motorcycle_tracks(
     iou_thresh: float = 0.55,
     ios_thresh: float = 0.85,
     min_dx_px: float = 12.0,
-    cumulative_overlap_thresh: float = 0.70,
+    cumulative_overlap_thresh: float = 0.85,
     max_centroid_dist_px: Optional[float] = None,
 ) -> List[TrackResult]:
     """
@@ -44,8 +44,8 @@ def deduplicate_motorcycle_tracks(
          ATAU separasi titik tumpu roda (|y2_A - y2_B| >= 8.0).
          Tolak sebagai duplikat jika tidak ada separasi fisik (|cx_A - cx_B| < min_dx_px and |y2_A - y2_B| < 8.0).
        - Jika max_centroid_dist_px diberikan dan jarak centroid <= max_centroid_dist_px tanpa separasi, tolak.
-    4. Multi-Box Cumulative Overlap Rejection: tolak jika >= cumulative_overlap_thresh (0.70) luas kotak tertutup
-       oleh gabungan kotak yang sudah diterima.
+    4. Multi-Box Cumulative Overlap Rejection: tolak jika >= cumulative_overlap_thresh (0.85) luas kotak tertutup
+       oleh gabungan kotak yang sudah diterima, dengan Physical Contact Anchor Exception untuk rentang 0.70 s.d. 0.85.
     """
     sorted_tracks = sorted(tracks, key=lambda t: t.confidence, reverse=True)
     deduped: List[TrackResult] = []
@@ -110,6 +110,22 @@ def deduplicate_motorcycle_tracks(
             covered_ratio = float(np.sum(mask)) / float(cand_w * cand_h)
             if covered_ratio >= cumulative_overlap_thresh:
                 is_dup = True
+            elif covered_ratio >= 0.70:
+                # Physical Contact Anchor Exception:
+                # Jika overlap kumulatif berada pada 0.70 <= covered < cumulative_overlap_thresh (0.85),
+                # pertahankan kandidat jika terdapat separasi fisik tapak ban
+                # (|cx_cand - cx_acc| >= 16.0 px ATAU |y2_cand - y2_acc| >= 6.0 px)
+                # terhadap seluruh kotak yang berkontribusi menutupi area kandidat.
+                has_physical_separation = True
+                for acc in deduped:
+                    if bbox_ios(cand.bbox, acc.bbox) > 0.05 or bbox_iou(cand.bbox, acc.bbox) > 0.05:
+                        a_cx = float((acc.bbox[0] + acc.bbox[2]) / 2.0)
+                        a_y2 = float(acc.bbox[3])
+                        if abs(c_cx - a_cx) < 16.0 and abs(c_y2 - a_y2) < 6.0:
+                            has_physical_separation = False
+                            break
+                if not has_physical_separation:
+                    is_dup = True
 
         if not is_dup:
             deduped.append(cand)
@@ -252,30 +268,30 @@ class MotorcycleBlockTracker:
                 continue
 
             # Multi-Tier Thresholding:
-            # - Ambang retensi motor terkunci (is_latched): conf >= 0.12
-            # - Ambang akuisisi motor baru: conf >= 0.14
+            # - Ambang retensi motor terkunci (is_latched): conf >= 0.08
+            # - Ambang akuisisi motor baru: conf >= 0.10
             is_near_latched = False
             for unit in self._stationary_motor_units.values():
                 if unit.is_latched and math.hypot(cx - unit.centroid[0], cy - unit.centroid[1]) < anchor_match_dist:
                     is_near_latched = True
                     break
 
-            min_conf = 0.12 if is_near_latched else 0.14
+            min_conf = 0.08 if is_near_latched else 0.10
             if track.confidence < min_conf:
                 continue
 
-            # Kontak roda pada batas poligon dengan toleransi hingga -12.0px & Dual Containment
+            # Kontak roda pada batas poligon dengan toleransi hingga -15.0px & Dual Containment
             d_wheel = float(cv2.pointPolygonTest(pts_scaled, wheel_pt, True))
-            if d_wheel < -12.0:
+            if d_wheel < -15.0:
                 continue
 
             overlap_ratio = bbox_polygon_overlap_ratio(track.bbox, pts_scaled)
             if d_wheel >= 0.0:
-                if overlap_ratio < 0.15:
+                if overlap_ratio < 0.08:
                     continue
             else:
                 d_center = float(cv2.pointPolygonTest(pts_scaled, center_pt, True))
-                if d_center < -6.0 and overlap_ratio < 0.05:
+                if d_center < -8.0 and overlap_ratio < 0.02:
                     continue
 
             candidate_tracks.append(track)
@@ -285,7 +301,7 @@ class MotorcycleBlockTracker:
             iou_thresh=0.55,
             ios_thresh=0.85,
             min_dx_px=6.0 * scale_factor,
-            cumulative_overlap_thresh=0.70,
+            cumulative_overlap_thresh=0.85,
         )
 
         UNIT_LATCH_SEC = 1.2

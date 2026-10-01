@@ -111,7 +111,7 @@ class CameraOrchestrator(threading.Thread):
         )
 
         detector_classes = self.camera_config.enabled_classes if (getattr(self.camera_config, "enabled_classes", None)) else ["person", "car", "motorcycle", "bus", "truck", "backpack", "handbag"]
-        det_conf = 0.15 if _is_block else 0.20
+        det_conf = 0.10 if _is_block else 0.20
         det_iou = 0.48 if _is_block else 0.45
         self.detector = detector or YOLO11nDetector(
             confidence_threshold=det_conf,

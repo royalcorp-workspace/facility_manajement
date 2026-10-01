@@ -137,25 +137,25 @@ def main():
             anat_reasons.append(f"ar={ar:.2f}>2.25")
         pass_anatomy = is_valid_motorcycle_anatomy(d.bbox, sx_block, sy_block)
 
-        # Tahap A: Conf Gate (Acquisition 0.14, Retention 0.12)
-        pass_conf_acq = (d.confidence >= 0.14)
-        pass_conf_ret = (d.confidence >= 0.12)
+        # Tahap A: Conf Gate (Acquisition 0.10, Retention 0.08)
+        pass_conf_acq = (d.confidence >= 0.10)
+        pass_conf_ret = (d.confidence >= 0.08)
 
         # Tahap C: Dual Containment Gate
-        if d_wheel < -12.0:
+        if d_wheel < -15.0:
             pass_containment = False
         elif d_wheel >= 0.0:
-            pass_containment = (ovl_ratio >= 0.15)
+            pass_containment = (ovl_ratio >= 0.08)
         else:
-            pass_containment = not (d_center < -6.0 and ovl_ratio < 0.05)
+            pass_containment = not (d_center < -8.0 and ovl_ratio < 0.02)
 
-        pass_wheel_in = (d_wheel >= -12.0)
-        pass_ovl = (ovl_ratio >= 0.05)
+        pass_wheel_in = (d_wheel >= -15.0)
+        pass_ovl = (ovl_ratio >= 0.02)
 
         # Status Keseluruhan Tahap A-C
         fail_reasons = []
         if not pass_conf_acq:
-            fail_reasons.append(f"CONF_LOW({d.confidence:.2f}<0.14)")
+            fail_reasons.append(f"CONF_LOW({d.confidence:.2f}<0.10)")
         if not pass_anatomy:
             fail_reasons.append(f"ANATOMY({','.join(anat_reasons)})")
         if not pass_containment:
@@ -224,7 +224,7 @@ def main():
     lolos_abc = [r for r in polygon_candidates if len(r["fail_reasons"]) == 0]
 
     print(f"\nRANGKUMAN GUGUR TAHAP A s.d. C:")
-    print(f"  * Tahap A (Confidence Gate < 0.30)  : {gugur_a} motor gugur")
+    print(f"  * Tahap A (Confidence Gate < 0.10)  : {gugur_a} motor gugur")
     print(f"  * Tahap B (Anatomy & Size Filter)   : {gugur_b} motor gugur")
     print(f"  * Tahap C (Polygon Containment Gate): {gugur_c} motor gugur")
     print(f"  * Lolos Tahap A, B, C               : {len(lolos_abc)} proposal")
@@ -253,7 +253,7 @@ def main():
         iou_thresh=0.55,
         ios_thresh=0.85,
         min_dx_px=6.0 * scale_factor,
-        cumulative_overlap_thresh=0.70,
+        cumulative_overlap_thresh=0.85,
     )
 
     deduped_ids = {t.track_id for t in deduped_tracks}

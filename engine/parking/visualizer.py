@@ -273,7 +273,7 @@ class ParkingVisualizer:
                         if not is_valid_motorcycle_anatomy(track.bbox, sx, sy):
                             continue
 
-                        wheel_in = cv2.pointPolygonTest(pts_zone, wheel_pt, True) >= -12.0
+                        wheel_in = cv2.pointPolygonTest(pts_zone, wheel_pt, True) >= -15.0
                         if not wheel_in:
                             continue
                         candidate_render.append(track)
@@ -284,7 +284,7 @@ class ParkingVisualizer:
                     iou_thresh=0.55,
                     ios_thresh=0.85,
                     min_dx_px=6.0 * scale_factor,
-                    cumulative_overlap_thresh=0.70,
+                    cumulative_overlap_thresh=0.85,
                 )
                 render_items = [(t.bbox, t.confidence) for t in valid_render]
 
