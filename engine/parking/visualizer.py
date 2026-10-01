@@ -236,7 +236,80 @@ class ParkingVisualizer:
             cv2.fillPoly(overlay, [pts], color=zone_color)
             cv2.addWeighted(overlay, 0.10, canvas, 0.90, 0, canvas)
 
-        # Label kapasitas di centroid area poligon
+        # 2. Render unit motor terparkir (bounding box kuning tipis & badge ID/confidence)
+        if active_slots:
+            pts_zone = np.array(
+                [[int(pt.x * sx), int(pt.y * sy)] for pt in active_slots[0].points],
+                dtype=np.int32,
+            )
+            drum_excl_x_render = int(self._block_exclusion_x_1080p * sx) if self._block_exclusion_x_1080p is not None else None
+
+            render_items: List[Tuple[Tuple[float, float, float, float], float]] = []
+            if stationary_motor_units:
+                render_units = sorted(
+                    stationary_motor_units.values(),
+                    key=lambda u: u.first_seen_time,
+                )
+                render_items = [
+                    (u.bbox, u.confidence)
+                    for u in render_units
+                    if (u.is_latched or (self.stationary_dwell_sec == 0.0) or (current_time > 0 and (current_time - u.first_seen_time) >= 2.0))
+                    and (current_time <= 0 or (current_time - u.last_seen_time) <= 10.0)
+                    and is_valid_motorcycle_anatomy(u.bbox, sx, sy)
+                    and (drum_excl_x_render is None or u.centroid[0] >= drum_excl_x_render)
+                ]
+            else:
+                candidate_render: List[TrackResult] = []
+                for track in tracks:
+                    if getattr(track, "class_label", None) == "motorcycle" and (track.is_confirmed or current_time == 0.0):
+                        rx1, ry1, rx2, ry2 = track.bbox
+                        cx = float((rx1 + rx2) / 2.0)
+                        wheel_y = float(ry2)
+                        wheel_pt = (int(cx), int(wheel_y))
+
+                        if drum_excl_x_render is not None and cx < drum_excl_x_render:
+                            continue
+
+                        if not is_valid_motorcycle_anatomy(track.bbox, sx, sy):
+                            continue
+
+                        wheel_in = cv2.pointPolygonTest(pts_zone, wheel_pt, False) >= 0
+                        if not wheel_in:
+                            continue
+                        candidate_render.append(track)
+
+                valid_render = deduplicate_motorcycle_tracks(
+                    candidate_render,
+                    iou_thresh=0.30,
+                    ios_thresh=0.40,
+                    max_centroid_dist_px=38.0,
+                )
+                render_items = [(t.bbox, t.confidence) for t in valid_render]
+
+            for idx, (r_bbox, r_conf) in enumerate(render_items, start=1):
+                x1, y1, x2, y2 = [int(round(coord)) for coord in r_bbox]
+                cx = int(round((r_bbox[0] + r_bbox[2]) / 2.0))
+                wheel_y = int(round(r_bbox[3]))
+
+                # Kotak kuning tipis (thickness = 1)
+                cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 255, 255), 1, cv2.LINE_AA)
+
+                # Titik kontak roda bawah (cx, y2) lingkaran hijau radius 2 px
+                cv2.circle(canvas, (cx, wheel_y), 2, (0, 255, 120), -1, cv2.LINE_AA)
+
+                # Mini-badge / label ID dan confidence
+                cv2.putText(
+                    canvas,
+                    f"#{idx} ({r_conf:.2f})",
+                    (x1, max(12, y1 - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.35,
+                    (0, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+
+        # 3. Label kapasitas di centroid area poligon
         for slot in active_slots:
             pts = np.array(
                 [[int(pt.x * sx), int(pt.y * sy)] for pt in slot.points],
@@ -247,7 +320,7 @@ class ParkingVisualizer:
             label = f"{occupied}/{total} MOTOR"
             self._draw_slot_badge(canvas, label, cx, cy)
 
-        # HUD 1-baris bersih di pojok kanan atas
+        # 4. HUD 1-baris bersih di pojok kanan atas
         hud_line = f"PARKING: {occupied}/{total} TERISI | KOSONG: {available} UNIT"
         self._draw_hud_pill_top_right(canvas, hud_line, available)
 
