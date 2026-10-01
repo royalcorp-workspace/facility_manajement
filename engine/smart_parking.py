@@ -659,7 +659,7 @@ class SmartParkingTracker:
         x1, y1, x2, y2 = new_track.bbox
         max_pt_y = float(np.max(pts_scaled[:, 1])) if len(pts_scaled) > 0 else 0.0
         y2_ai = (y2 * (360.0 / 1080.0)) if (max_pt_y > 360.0 or y2 > 360.0) else y2
-        if getattr(state, "slot_id", None) in ("zone_01", "zone_02", "zone_03", "zone_04", "zone_05", "zone_06") and y2_ai > 230.0:
+        if y2_ai >= 225.0:
             return False
         cx = float((x1 + x2) / 2.0)
         bw = max(1.0, x2 - x1)
@@ -1120,11 +1120,11 @@ class SmartParkingTracker:
                 cx_1080p = (cx / sx) if sx > 0 else cx
                 is_outside_s8 = (s_id == "zone_08" and cx_1080p > 1810.0)
 
-                # Filter Koordinat Vertikal Kendaraan Manuver Koridor (Y-Axis Gating):
-                # Kendaraan di koridor manuver depan berada jauh lebih bawah pada kanvas kamera (y2 > 230 pada AI canvas 640p).
-                # Pastikan proposal kendaraan dengan tapak roda bawah y2 > 230 px tidak diizinkan merebut, memicu class yield, atau mengintervensi slot barisan parkir (S1 s.d. S6).
+                # Filter Koordinat Vertikal Kendaraan Manuver Koridor (Universal Corridor Gating):
+                # Kendaraan di koridor sirkulasi / manuver depan memiliki tapak roda bawah y2 >= 225.0 px (pada AI canvas 640p).
+                # Tolak seluruh kendaraan koridor untuk menjadi kandidat okupansi pada SEMUA slot (S1 s.d. S8).
                 y2_ai = y2 if (sy <= 0.5) else (y2 * (360.0 / 1080.0))
-                if s_id in ("zone_01", "zone_02", "zone_03", "zone_04", "zone_05", "zone_06") and y2_ai > 230.0:
+                if y2_ai >= 225.0:
                     continue
 
                 is_vacant_slot = (state.phase == "VACANT")
@@ -1140,7 +1140,9 @@ class SmartParkingTracker:
                         acq_thresh = self.acquisition_conf_thresh
 
                     conf_ok = (vt.confidence >= acq_thresh)
-                    passed_gate = conf_ok and has_stance_contact
+                    # Pada slot VACANT: wajibkan titik kontak tanah d_ground >= -eff_margin (-8.0 px)
+                    # Tolak klaim akuisisi yang hanya berbasis lower_overlap jika d_ground terlalu jauh di luar poligon
+                    passed_gate = conf_ok and has_stance_contact and (d_ground >= -eff_margin)
                 else:
                     acq_thresh = self.acquisition_conf_thresh
                     conf_ok = (vt.confidence >= self.retention_conf_thresh)
@@ -1361,6 +1363,31 @@ class SmartParkingTracker:
         if self.debug_diagnostics:
             self._last_assigned_slots = {k: v.track_id for k, v in assigned_slot_to_track.items()}
 
+        # Identifikasi seluruh kendaraan koridor pada frame aktif (y2 >= 225 px pada 640p)
+        corridor_vehicles_in_frame: List[TrackResult] = []
+        for cv_t in tracks:
+            if getattr(cv_t, "class_label", None) in ("car", "truck", "bus"):
+                cv_x1, cv_y1, cv_x2, cv_y2 = cv_t.bbox
+                cv_y2_ai = cv_y2 if (sy <= 0.5) else (cv_y2 * (360.0 / 1080.0))
+                if cv_y2_ai >= 225.0:
+                    corridor_vehicles_in_frame.append(cv_t)
+
+        def is_slot_occluded_by_corridor(slot_geom_item: Dict[str, Any]) -> bool:
+            s_bbox = slot_geom_item["bbox"]
+            s_xmin, s_ymin, s_xmax, s_ymax = s_bbox
+            slot_w = max(1.0, s_xmax - s_xmin)
+            for cv in corridor_vehicles_in_frame:
+                cx1, cy1, cx2, cy2 = cv.bbox
+                c_y1_ai = cy1 if (sy <= 0.5) else (cy1 * (360.0 / 1080.0))
+                # Bodi atas kendaraan koridor menembus/menutupi barisan slot
+                if c_y1_ai <= (s_ymax + 15.0):
+                    ix1 = max(s_xmin, cx1)
+                    ix2 = min(s_xmax, cx2)
+                    inter_w = max(0.0, ix2 - ix1)
+                    if (inter_w / slot_w) >= 0.35:
+                        return True
+            return False
+
         # ── State Transitions Tiap Slot ────────────────────────────────────────
         for slot in active_slots:
             slot_id = slot.zone_id
@@ -1375,7 +1402,7 @@ class SmartParkingTracker:
                 for cand_t in tracks:
                     cx1, cy1, cx2, cy2 = cand_t.bbox
                     c_y2_ai = cy2 if (sy <= 0.5) else (cy2 * (360.0 / 1080.0))
-                    if c_y2_ai > 230.0:
+                    if c_y2_ai >= 225.0:
                         continue
                     ccx = float((cx1 + cx2) / 2.0)
                     cbw = max(1.0, cx2 - cx1)
@@ -1535,13 +1562,16 @@ class SmartParkingTracker:
                     # atau vacant_confirm_sec (5.0s) normal.
                     confirm_threshold = 10.0 if state.latch_occupied else max(5.0, state.vacant_confirm_sec)
 
-                    # Proteksi Khusus Retensi Slot S1 Terkunci (Anti-Interferensi Koridor):
-                    # Jika S1 stasioner (dwell >= 10.0s atau latched), evaluasi apakah ada kontak 5-point stance probe mobil di S1.
-                    # Status S1 HANYA boleh berubah menjadi VACANT jika seluruh 5 titik probe kontak aspal (d_ground) mobil silver benar-benar bersih kontinu selama >= 5.0 detik berturut-turut.
-                    if slot_id == "zone_01" and (state.dwell_duration >= 10.0 or state.latch_occupied):
-                        if s1_has_contact:
+                    # Proteksi Khusus Retensi Slot Terkunci & Occlusion Freeze State (Anti-Interferensi Koridor):
+                    # Jika slot stasioner (dwell >= 10.0s atau latched):
+                    # 1. Cek kontak 5-point stance probe mobil (misal s1_has_contact untuk S1).
+                    # 2. Cek oklusi garis pandang oleh kendaraan koridor depan (is_slot_occluded_by_corridor).
+                    is_occluded = is_slot_occluded_by_corridor(geom)
+                    if state.dwell_duration >= 10.0 or state.latch_occupied:
+                        if (slot_id == "zone_01" and s1_has_contact) or is_occluded:
                             state.last_seen_time = current_time
                             state.polygon_clear_since = None
+                            state.latch_occupied = True
 
                     if state.last_seen_time > 0 and (current_time - state.last_seen_time) > 0.5:
                         # Mulai atau lanjutkan timer poligon kosong
