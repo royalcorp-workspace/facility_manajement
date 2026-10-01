@@ -1983,39 +1983,35 @@ class SmartParkingTracker:
                 )
                 render_items = [(t.bbox, t.confidence) for t in valid_render]
 
-            for motor_idx, (r_bbox, r_conf) in enumerate(render_items, 1):
-                x1, y1, x2, y2 = [int(round(v)) for v in r_bbox]
-                cx = float((r_bbox[0] + r_bbox[2]) / 2.0)
-                wheel_y = float(r_bbox[3])
-
-                cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 255, 255), 1, cv2.LINE_AA)
-
-                cv2.circle(canvas, (int(cx), int(wheel_y)), 2, (0, 255, 0), -1, cv2.LINE_AA)
-
-                badge_text = f"#{motor_idx} ({r_conf:.2f})"
-
-                font_scale = 0.32
-                font_thick = 1
-                font_face = cv2.FONT_HERSHEY_SIMPLEX
-                (tw, th), _ = cv2.getTextSize(badge_text, font_face, font_scale, font_thick)
-
-                bx1 = max(0, x1)
-                by1 = max(0, y1 - th - 3)
-                bx2 = min(canvas.shape[1] - 1, bx1 + tw + 4)
-                by2 = min(canvas.shape[0] - 1, by1 + th + 3)
-
-                cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (20, 24, 32), -1)
-                cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (0, 255, 255), 1, cv2.LINE_AA)
-                cv2.putText(
-                    canvas,
-                    badge_text,
-                    (bx1 + 2, by1 + th),
-                    font_face,
-                    font_scale,
-                    (0, 255, 255),
-                    font_thick,
-                    cv2.LINE_AA,
-                )
+            # Visual bounding box, wheel contact dot, dan mini-label dinonaktifkan untuk clean canvas look:
+            # (Perhitungan kepadatan kuota, Spatial Anchor Memory, dan status telemetri tetap berjalan penuh)
+            # for motor_idx, (r_bbox, r_conf) in enumerate(render_items, 1):
+            #     x1, y1, x2, y2 = [int(round(v)) for v in r_bbox]
+            #     cx = float((r_bbox[0] + r_bbox[2]) / 2.0)
+            #     wheel_y = float(r_bbox[3])
+            #     cv2.rectangle(canvas, (x1, y1), (x2, y2), (0, 255, 255), 1, cv2.LINE_AA)
+            #     cv2.circle(canvas, (int(cx), int(wheel_y)), 2, (0, 255, 0), -1, cv2.LINE_AA)
+            #     badge_text = f"#{motor_idx} ({r_conf:.2f})"
+            #     font_scale = 0.32
+            #     font_thick = 1
+            #     font_face = cv2.FONT_HERSHEY_SIMPLEX
+            #     (tw, th), _ = cv2.getTextSize(badge_text, font_face, font_scale, font_thick)
+            #     bx1 = max(0, x1)
+            #     by1 = max(0, y1 - th - 3)
+            #     bx2 = min(canvas.shape[1] - 1, bx1 + tw + 4)
+            #     by2 = min(canvas.shape[0] - 1, by1 + th + 3)
+            #     cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (20, 24, 32), -1)
+            #     cv2.rectangle(canvas, (bx1, by1), (bx2, by2), (0, 255, 255), 1, cv2.LINE_AA)
+            #     cv2.putText(
+            #         canvas,
+            #         badge_text,
+            #         (bx1 + 2, by1 + th),
+            #         font_face,
+            #         font_scale,
+            #         (0, 255, 255),
+            #         font_thick,
+            #         cv2.LINE_AA,
+            #     )
 
         # ── 100% SINKRONISASI VISUAL-TELEMETRI MUTLAK ──────────────────────────
         # `occupied` dibaca dari parking_stats yang sudah dihitung di _update_block_mode
