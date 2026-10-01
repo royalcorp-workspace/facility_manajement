@@ -142,15 +142,15 @@ def main():
         pass_conf_ret = (d.confidence >= 0.08)
 
         # Tahap C: Dual Containment Gate
-        if d_wheel < -15.0:
+        if d_wheel < 0.0 and d_center < 0.0:
             pass_containment = False
-        elif d_wheel >= 0.0:
-            pass_containment = (ovl_ratio >= 0.08)
+        elif d_wheel < 0.0:
+            pass_containment = (ovl_ratio >= 0.25)
         else:
-            pass_containment = not (d_center < -8.0 and ovl_ratio < 0.02)
+            pass_containment = (ovl_ratio >= 0.10)
 
-        pass_wheel_in = (d_wheel >= -15.0)
-        pass_ovl = (ovl_ratio >= 0.02)
+        pass_wheel_in = (d_wheel >= 0.0 or pass_containment)
+        pass_ovl = (ovl_ratio >= 0.10 or (d_wheel < 0.0 and ovl_ratio >= 0.25))
 
         # Status Keseluruhan Tahap A-C
         fail_reasons = []
@@ -159,7 +159,7 @@ def main():
         if not pass_anatomy:
             fail_reasons.append(f"ANATOMY({','.join(anat_reasons)})")
         if not pass_containment:
-            fail_reasons.append(f"CONTAINMENT_FAIL(dw={d_wheel:.1f},ovl={ovl_ratio*100:.0f}%)")
+            fail_reasons.append(f"CONTAINMENT_FAIL(dw={d_wheel:.1f},dc={d_center:.1f},ovl={ovl_ratio*100:.0f}%)")
 
         status_str = "LOLOS TAHAP A-C" if not fail_reasons else " | ".join(fail_reasons)
 
@@ -250,10 +250,11 @@ def main():
     scale_factor = max(1.0, (ai_w / 1920.0) / (1.0 / 3.0))  # 2.0
     deduped_tracks = deduplicate_motorcycle_tracks(
         tracks_for_dedup,
-        iou_thresh=0.55,
-        ios_thresh=0.85,
+        iou_thresh=0.40,
+        ios_thresh=0.60,
         min_dx_px=6.0 * scale_factor,
         cumulative_overlap_thresh=0.85,
+        max_centroid_dist_px=28.0,
     )
 
     deduped_ids = {t.track_id for t in deduped_tracks}

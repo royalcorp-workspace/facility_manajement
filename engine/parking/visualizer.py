@@ -250,22 +250,41 @@ class ParkingVisualizer:
                     stationary_motor_units.values(),
                     key=lambda u: u.first_seen_time,
                 )
-                render_items = [
-                    (u.bbox, u.confidence)
+                raw_units = [
+                    u
                     for u in render_units
                     if (u.is_latched or (self.stationary_dwell_sec == 0.0) or (current_time > 0 and (current_time - u.first_seen_time) >= 1.2))
                     and (current_time <= 0 or (current_time - u.last_seen_time) <= 12.0)
                     and is_valid_motorcycle_anatomy(u.bbox, sx, sy)
                     and (drum_excl_x_render is None or u.centroid[0] >= drum_excl_x_render)
                 ]
+                scale_factor = max(1.0, sx / (1.0 / 3.0))
+                min_dx_render = 6.0 * scale_factor
+                dedup_render = []
+                for u in sorted(raw_units, key=lambda x: x.confidence, reverse=True):
+                    is_dup = False
+                    for acc in dedup_render:
+                        iou = bbox_iou(u.bbox, acc.bbox)
+                        ios = bbox_ios(u.bbox, acc.bbox)
+                        dist = math.hypot(u.centroid[0] - acc.centroid[0], u.centroid[1] - acc.centroid[1])
+                        dx = abs(u.centroid[0] - acc.centroid[0])
+                        dy2 = abs(u.bbox[3] - acc.bbox[3])
+                        if ios >= 0.60 or iou >= 0.40 or (dist <= 28.0 and dx < min_dx_render and dy2 < 8.0):
+                            is_dup = True
+                            break
+                    if not is_dup:
+                        dedup_render.append(u)
+                render_items = [(u.bbox, u.confidence) for u in sorted(dedup_render, key=lambda x: x.first_seen_time)]
             else:
                 candidate_render: List[TrackResult] = []
                 for track in tracks:
                     if getattr(track, "class_label", None) in ("motorcycle", "bicycle") and (track.is_confirmed or current_time == 0.0):
                         rx1, ry1, rx2, ry2 = track.bbox
                         cx = float((rx1 + rx2) / 2.0)
+                        cy = float((ry1 + ry2) / 2.0)
                         wheel_y = float(ry2)
                         wheel_pt = (int(cx), int(wheel_y))
+                        center_pt = (int(cx), int(cy))
 
                         if drum_excl_x_render is not None and cx < drum_excl_x_render:
                             continue
@@ -273,18 +292,29 @@ class ParkingVisualizer:
                         if not is_valid_motorcycle_anatomy(track.bbox, sx, sy):
                             continue
 
-                        wheel_in = cv2.pointPolygonTest(pts_zone, wheel_pt, True) >= -15.0
-                        if not wheel_in:
+                        d_wheel = float(cv2.pointPolygonTest(pts_zone, wheel_pt, True))
+                        d_center = float(cv2.pointPolygonTest(pts_zone, center_pt, True))
+                        overlap_ratio = bbox_polygon_overlap_ratio(track.bbox, pts_zone)
+
+                        if d_wheel < 0.0 and d_center < 0.0:
                             continue
+                        if d_wheel < 0.0:
+                            if overlap_ratio < 0.25:
+                                continue
+                        else:
+                            if overlap_ratio < 0.10:
+                                continue
+
                         candidate_render.append(track)
 
                 scale_factor = max(1.0, sx / (1.0 / 3.0))
                 valid_render = deduplicate_motorcycle_tracks(
                     candidate_render,
-                    iou_thresh=0.55,
-                    ios_thresh=0.85,
+                    iou_thresh=0.40,
+                    ios_thresh=0.60,
                     min_dx_px=6.0 * scale_factor,
                     cumulative_overlap_thresh=0.85,
+                    max_centroid_dist_px=28.0,
                 )
                 render_items = [(t.bbox, t.confidence) for t in valid_render]
 

@@ -27,23 +27,24 @@ from engine.tracker_interface import TrackResult
 
 def deduplicate_motorcycle_tracks(
     tracks: List[TrackResult],
-    iou_thresh: float = 0.55,
-    ios_thresh: float = 0.85,
+    iou_thresh: float = 0.40,
+    ios_thresh: float = 0.60,
     min_dx_px: float = 12.0,
     cumulative_overlap_thresh: float = 0.85,
-    max_centroid_dist_px: Optional[float] = None,
+    max_centroid_dist_px: Optional[float] = 28.0,
 ) -> List[TrackResult]:
     """
     Deduplikasi spasial cerdas untuk kendaraan roda dua (motorcycle / bicycle) padat/berhimpitan:
     1. Sort kandidat berdasarkan confidence tertinggi.
-    2. Filter Kotak Anak: tolak jika IoS >= ios_thresh (0.85) -> pecahan anak (jok/stang/roda) dari motor yang sama.
+    2. Filter Kotak Anak: tolak jika IoS >= ios_thresh (0.60) -> pecahan anak (jok/stang/roda) dari motor yang sama.
     3. Relaksasi Berdampingan:
-       - Jika IoU >= iou_thresh (0.55): tolak sebagai duplikat.
+       - Jika IoU >= iou_thresh (0.40): tolak sebagai duplikat.
+       - Proximity Guard: jika jarak Euclidean titik tengah dist(c1, c2) <= max_centroid_dist_px (28.0 px)
+         tanpa separasi lateral fisik antar motor (dx < min_dx_px and dy2 < 8.0).
        - Jika ada overlap signifikan (IoU >= 0.20 atau IoS >= 0.30):
          Pertahankan sebagai 2 unit terpisah jika ada separasi sumbu-X (|cx_A - cx_B| >= min_dx_px)
          ATAU separasi titik tumpu roda (|y2_A - y2_B| >= 8.0).
          Tolak sebagai duplikat jika tidak ada separasi fisik (|cx_A - cx_B| < min_dx_px and |y2_A - y2_B| < 8.0).
-       - Jika max_centroid_dist_px diberikan dan jarak centroid <= max_centroid_dist_px tanpa separasi, tolak.
     4. Multi-Box Cumulative Overlap Rejection: tolak jika >= cumulative_overlap_thresh (0.85) luas kotak tertutup
        oleh gabungan kotak yang sudah diterima, dengan Physical Contact Anchor Exception untuk rentang 0.70 s.d. 0.85.
     """
@@ -66,29 +67,32 @@ def deduplicate_motorcycle_tracks(
 
             dx = abs(c_cx - a_cx)
             dy2 = abs(c_y2 - a_y2)
+            dist = math.hypot(c_cx - a_cx, c_cy - a_cy)
 
-            # Filter Kotak Anak: jika IoS >= ios_thresh (0.85), kotak kecil adalah pecahan
+            # Filter Kotak Anak / Bersarang: jika IoS >= ios_thresh (0.60), kotak kecil adalah pecahan
             if ios >= ios_thresh:
                 is_dup = True
                 break
 
-            # Jika IoU sangat tinggi (>= iou_thresh), tolak sebagai duplikat
+            # Jika IoU tinggi (>= iou_thresh 0.40), tolak sebagai duplikat
             if iou >= iou_thresh:
+                is_dup = True
+                break
+
+            # Proximity Guard: jika jarak Euclidean titik tengah dist(c1, c2) <= max_centroid_dist_px (28.0 px)
+            # tanpa separasi lateral fisik antar motor (dx < min_dx_px)
+            if (
+                max_centroid_dist_px is not None
+                and dist <= max_centroid_dist_px
+                and dx < min_dx_px
+                and dy2 < 8.0
+            ):
                 is_dup = True
                 break
 
             # Relaksasi Berdampingan:
             # Jika ada overlap signifikan dan tidak ada separasi fisik sumbu-X maupun tapak roda
             if (iou >= 0.20 or ios >= 0.30) and (dx < min_dx_px and dy2 < 8.0):
-                is_dup = True
-                break
-
-            if (
-                max_centroid_dist_px is not None
-                and math.hypot(c_cx - a_cx, c_cy - a_cy) <= max_centroid_dist_px
-                and dx < min_dx_px
-                and dy2 < 8.0
-            ):
                 is_dup = True
                 break
 
@@ -280,28 +284,34 @@ class MotorcycleBlockTracker:
             if track.confidence < min_conf:
                 continue
 
-            # Kontak roda pada batas poligon dengan toleransi hingga -15.0px & Dual Containment
+            # Kontak roda pada batas poligon & Penolakan Motor di Luar Garis
             d_wheel = float(cv2.pointPolygonTest(pts_scaled, wheel_pt, True))
-            if d_wheel < -15.0:
+            d_center = float(cv2.pointPolygonTest(pts_scaled, center_pt, True))
+            overlap_ratio = bbox_polygon_overlap_ratio(track.bbox, pts_scaled)
+
+            # Syarat mutlak: Titik tengah ATAU titik tapak ban bawah WAJIB di dalam poligon (>= 0.0 px)
+            if d_wheel < 0.0 and d_center < 0.0:
                 continue
 
-            overlap_ratio = bbox_polygon_overlap_ratio(track.bbox, pts_scaled)
-            if d_wheel >= 0.0:
-                if overlap_ratio < 0.08:
+            # Jika titik tumpu berada di luar poligon (d_wheel < 0.0 px),
+            # proposal HANYA boleh dipertimbangkan jika memiliki persentase irisan luas overlap_ratio >= 0.25 (25%)
+            if d_wheel < 0.0:
+                if overlap_ratio < 0.25:
                     continue
             else:
-                d_center = float(cv2.pointPolygonTest(pts_scaled, center_pt, True))
-                if d_center < -8.0 and overlap_ratio < 0.02:
+                # Titik tumpu di dalam (d_wheel >= 0.0 px): wajib overlap wajar >= 0.10
+                if overlap_ratio < 0.10:
                     continue
 
             candidate_tracks.append(track)
 
         valid_tracks = deduplicate_motorcycle_tracks(
             candidate_tracks,
-            iou_thresh=0.55,
-            ios_thresh=0.85,
+            iou_thresh=0.40,
+            ios_thresh=0.60,
             min_dx_px=6.0 * scale_factor,
             cumulative_overlap_thresh=0.85,
+            max_centroid_dist_px=28.0,
         )
 
         UNIT_LATCH_SEC = 1.2
@@ -390,7 +400,9 @@ class MotorcycleBlockTracker:
                 u_dist = math.hypot(u1.centroid[0] - u2.centroid[0], u1.centroid[1] - u2.centroid[1])
                 u_iou = bbox_iou(u1.bbox, u2.bbox)
                 u_ios = bbox_ios(u1.bbox, u2.bbox)
-                if u_dist < (6.0 * scale_factor) or u_iou >= 0.55 or u_ios >= 0.85:
+                u_dx = abs(u1.centroid[0] - u2.centroid[0])
+                u_dy2 = abs(u1.bbox[3] - u2.bbox[3])
+                if u_iou >= 0.40 or u_ios >= 0.60 or (u_dist <= 28.0 and u_dx < (6.0 * scale_factor) and u_dy2 < 8.0):
                     if u1.consecutive_hits >= u2.consecutive_hits:
                         prune_uids.add(u2_id)
                     else:
