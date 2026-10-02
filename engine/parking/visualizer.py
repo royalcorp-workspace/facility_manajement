@@ -20,7 +20,7 @@ import numpy as np
 from engine.config_loader import ROIZone, TripwireRule
 from engine.parking.base import SlotState, StationaryMotorUnit
 from engine.parking.motorcycle_block import deduplicate_motorcycle_tracks, is_valid_motorcycle_anatomy
-from engine.parking.spatial import bbox_polygon_overlap_ratio
+from engine.parking.spatial import bbox_ios, bbox_iou, bbox_polygon_overlap_ratio
 from engine.tracker_interface import TrackResult
 
 
