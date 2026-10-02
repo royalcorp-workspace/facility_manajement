@@ -24,6 +24,7 @@ class SmartParkingTracker:
         self,
         total_slots: Optional[int] = None,
         dwell_threshold_sec: float = 3.0,
+        clear_confirm_sec: float = 3.2,
         vehicle_classes: Optional[Set[str]] = None,
         parking_mode: str = "slot",
         block_capacity: int = 30,
@@ -47,6 +48,7 @@ class SmartParkingTracker:
         self.stationary_dwell_sec = stationary_dwell_sec
         self._block_exclusion_x_1080p = block_exclusion_x_1080p
         self.dwell_threshold_sec = dwell_threshold_sec
+        self.clear_confirm_sec = clear_confirm_sec
 
         if vehicle_classes is not None:
             self.vehicle_classes = set(vehicle_classes)
@@ -68,6 +70,7 @@ class SmartParkingTracker:
             self._car_tracker = CarSlotTracker(
                 total_slots=total_slots,
                 dwell_threshold_sec=dwell_threshold_sec,
+                clear_confirm_sec=clear_confirm_sec,
                 vehicle_classes=self.vehicle_classes,
                 acquisition_conf_thresh=acquisition_conf_thresh,
                 retention_conf_thresh=retention_conf_thresh,
