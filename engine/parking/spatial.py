@@ -118,3 +118,25 @@ def bbox_ios(box_a: Tuple[float, float, float, float], box_b: Tuple[float, float
     area_a = max(1.0, (ax2 - ax1) * (ay2 - ay1))
     area_b = max(1.0, (bx2 - bx1) * (by2 - by1))
     return float(intersection / min(area_a, area_b))
+
+
+def compute_exclusive_slot_assignments(
+    tracks: List[Any],
+    slot_geometries: Dict[str, Dict[str, Any]],
+    min_ios_threshold: float = 0.10,
+) -> Dict[int, str]:
+    """
+    Menghitung matriks IoS antara setiap track kendaraan vs seluruh slot poligon
+    dan menentukan pasangan eksklusif (Greedy Best-Match) berdasarkan
+    IoS tertinggi (argmax). Satu kendaraan hanya boleh mengklaim satu slot.
+    """
+    best_slot_for_track: Dict[int, str] = {}
+    for vt in tracks:
+        track_slot_ios: Dict[str, float] = {}
+        for s_id, geom in slot_geometries.items():
+            track_slot_ios[s_id] = bbox_polygon_ios(vt.bbox, geom["pts_scaled"])
+        if track_slot_ios:
+            top_s_id = max(track_slot_ios, key=track_slot_ios.get)
+            if track_slot_ios[top_s_id] >= min_ios_threshold:
+                best_slot_for_track[vt.track_id] = top_s_id
+    return best_slot_for_track

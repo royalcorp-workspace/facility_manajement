@@ -18,7 +18,12 @@ import numpy as np
 from engine.config_loader import ROIZone, TripwireRule
 from engine.geometry import bbox_bottom_center, bbox_iou, point_in_polygon, scale_points
 from engine.parking.base import SlotState
-from engine.parking.spatial import bbox_ios, bbox_polygon_ios, bbox_polygon_overlap_ratio
+from engine.parking.spatial import (
+    bbox_ios,
+    bbox_polygon_ios,
+    bbox_polygon_overlap_ratio,
+    compute_exclusive_slot_assignments,
+)
 from engine.tracker_interface import TrackResult
 
 
@@ -41,8 +46,8 @@ def suppress_corridor_child_boxes(
         bh_ai = max(0.0, (by2 - by1) * t_scale)
         area_ai = bw_ai * bh_ai
 
-        # Kriteria B_parent: y2_parent >= 225.0 px ATAU Area(B_parent) >= 18000 px²
-        if y2_ai >= 225.0 or area_ai >= 18000.0:
+        # Kriteria B_parent: y2_parent >= 215.0 px ATAU Area(B_parent) >= 18000 px²
+        if y2_ai >= 215.0 or area_ai >= 18000.0:
             parent_boxes.append((bx1, by1, bx2, by2))
 
     if not parent_boxes:
@@ -53,16 +58,10 @@ def suppress_corridor_child_boxes(
         bx1, by1, bx2, by2 = t.bbox
         t_scale = (360.0 / 1080.0) if (by2 > 360.0 or bx2 > 640.0) else 1.0
         y2_ai = by2 * t_scale
-        x1_ai = bx1 * t_scale
         bw = max(0.0, bx2 - bx1)
         bh = max(0.0, by2 - by1)
         area_i = bw * bh
         if area_i <= 0.0:
-            continue
-
-        # Mobil di slot parkir (y2_ai < 215.0) di ujung kanan (S8: x1_ai >= 480.0) jangan pernah dihapus sebagai child
-        if y2_ai < 215.0 and x1_ai >= 480.0:
-            surviving_tracks.append(t)
             continue
 
         is_child = False
@@ -73,9 +72,11 @@ def suppress_corridor_child_boxes(
             if area_i >= parent_area:
                 continue
 
-            # Kendaraan koridor depan (y2_parent >= 225.0) tidak boleh mengeliminasi mobil parkir belakang (y2_cand < 215.0)
+            # Depth Stratification Universal (S1-S8):
+            # Kendaraan koridor depan (y2_parent >= 215.0) DILARANG men-suppress
+            # kendaraan di deretan petak parkir belakang (y2_cand < 215.0)
             p_scale = (360.0 / 1080.0) if (py2 > 360.0 or px2 > 640.0) else 1.0
-            if (py2 * p_scale) >= 225.0 and y2_ai < 215.0:
+            if (py2 * p_scale) >= 215.0 and y2_ai < 215.0:
                 continue
 
             ix1 = max(bx1, px1)
@@ -623,6 +624,38 @@ class CarSlotTracker:
                 tid: t for tid, t in self._last_diag_log_time.items() if t >= cutoff
             }
 
+        # 1. Deteksi kendaraan koridor depan untuk oklusi universal (Depth Stratification)
+        corridor_vehicles_in_frame: List[TrackResult] = []
+        for cv_t in tracks:
+            if getattr(cv_t, "class_label", None) in ("car", "truck", "bus"):
+                cv_x1, cv_y1, cv_x2, cv_y2 = cv_t.bbox
+                cv_y2_ai = cv_y2 if (sy <= 0.5) else (cv_y2 * (360.0 / 1080.0))
+                if cv_y2_ai >= 215.0:
+                    corridor_vehicles_in_frame.append(cv_t)
+
+        def is_slot_occluded_by_corridor(slot_geom_item: Dict[str, Any]) -> bool:
+            s_bbox = slot_geom_item["bbox"]
+            s_xmin, s_ymin, s_xmax, s_ymax = s_bbox
+            slot_w = max(1.0, s_xmax - s_xmin)
+            for cv in corridor_vehicles_in_frame:
+                cx1, cy1, cx2, cy2 = cv.bbox
+                c_y1_ai = cy1 if (sy <= 0.5) else (cy1 * (360.0 / 1080.0))
+                if c_y1_ai <= (s_ymax + 20.0):
+                    ix1 = max(s_xmin, cx1)
+                    ix2 = min(s_xmax, cx2)
+                    inter_w = max(0.0, ix2 - ix1)
+                    if (inter_w / slot_w) >= 0.25:
+                        return True
+            return False
+
+        # 2. Exclusive Allocation: Hitung IoS setiap track ke setiap slot
+        # 1 mobil terdeteksi (track_id) HANYA boleh mengklaim 1 slot dengan IoS tertinggi
+        best_slot_for_track = compute_exclusive_slot_assignments(
+            tracks=vehicle_tracks,
+            slot_geometries=slot_geometries,
+            min_ios_threshold=0.10,
+        )
+
         for slot in active_slots:
             s_id = slot.zone_id
             state = self.slot_states[s_id]
@@ -635,8 +668,13 @@ class CarSlotTracker:
 
             slot_target_classes = getattr(slot, "target_classes", None)
             allowed_classes = set(slot_target_classes) if slot_target_classes else self.vehicle_classes
+            is_occluded = is_slot_occluded_by_corridor(geom)
 
             for vt in vehicle_tracks:
+                # Exclusive Assignment: Mobil hanya boleh menjadi kandidat untuk slot dengan IoS tertinggi
+                if best_slot_for_track.get(vt.track_id) != s_id:
+                    continue
+
                 x1, y1, x2, y2 = vt.bbox
                 cx = float((x1 + x2) / 2.0)
                 cy = float((y1 + y2) / 2.0)
@@ -676,13 +714,16 @@ class CarSlotTracker:
 
                 is_class_allowed = (vt.class_label in allowed_classes)
                 if not is_class_allowed:
-                    if s_id != "zone_01" and vt.class_label in ("truck", "bus") and (d_center >= 0.0 or lower_overlap >= 0.35 or ios_slot >= 0.25):
+                    # Truk pickup / niaga kecil HANYA sah jika kontak tapak ban strictly di dalam petak (d_center >= 0.0),
+                    # bukan kendaraan koridor (y2_ai < 215.0), dan slot tidak sedang teroklusi koridor
+                    if vt.class_label in ("truck", "bus") and d_center >= 0.0 and y2_ai < 215.0 and not is_occluded:
                         is_class_allowed = True
                 if not is_class_allowed:
                     continue
 
                 eff_margin = max(8.0, self.wheel_contact_margin_px)
-                # Pendekatan Hibrida: IoS >= 0.25 ATAU bottom_center berada di dalam poligon
+                # Pendekatan Hibrida:
+                # Tier 1 (Normal View): IoS >= 0.25 ATAU bottom_center berada di dalam poligon
                 is_bottom_in = (d_center >= 0.0)
                 is_spatial_occupancy = (ios_slot >= 0.25) or is_bottom_in
                 has_stance_contact = (
@@ -691,8 +732,18 @@ class CarSlotTracker:
                     or (lower_overlap >= 0.15 and d_center >= -eff_margin)
                 )
 
+                # Tier 2 (Occluded View: mobil parkir y2_ai < 215 px terhalang kendaraan koridor)
                 y2_ai = y2 if (sy <= 0.5) else (y2 * (360.0 / 1080.0))
-                if y2_ai >= 225.0:
+                if is_occluded and y2_ai < 215.0:
+                    upper_bbox = (x1, y1, x2, y1 + bh * 0.5)
+                    upper_overlap = bbox_polygon_overlap_ratio(upper_bbox, pts_scaled)
+                    in_centroid = cv2.pointPolygonTest(pts_scaled, (cx, cy), False) >= 0
+                    if (ios_slot >= 0.15) or (upper_overlap >= 0.15) or (in_centroid and ios_slot >= 0.10):
+                        is_spatial_occupancy = True
+                        has_stance_contact = True
+
+                max_slot_y = float(np.max(pts_scaled[:, 1])) if len(pts_scaled) > 0 else 225.0
+                if y2_ai > (max_slot_y + 8.0) and y2_ai >= 225.0:
                     continue
 
                 is_vacant_slot = (state.phase == "VACANT")
@@ -718,13 +769,13 @@ class CarSlotTracker:
                 # Pengetatan khusus Slot S3 (Anti-Crosstalk Petak Kosong S3 dari Mobil S2)
                 if s_id == "zone_03" and is_vacant_slot:
                     min_x_s3 = float(np.min(pts_scaled[:, 0])) if len(pts_scaled) > 0 else 148.0
-                    # Wajibkan titik tapak kontak tanah strictly di dalam poligon (d_ground >= 0.0 px)
-                    # dan tolak jika centroid mobil berada di luar span kiri poligon S3 (cx < 148.0 px)
                     if (d_ground < 0.0 and ios_slot < 0.25) or cx < min_x_s3 or cx < 148.0:
                         continue
 
                 if is_vacant_slot:
-                    if s_id == "zone_04" and vt.class_label in ("car", "truck") and (lower_overlap >= 0.15 or d_ground >= -eff_margin or ios_slot >= 0.20):
+                    if is_occluded and (ios_slot >= 0.15 or lower_overlap >= 0.15):
+                        acq_thresh = min(0.18, self.acquisition_conf_thresh)
+                    elif s_id == "zone_04" and vt.class_label in ("car", "truck") and (lower_overlap >= 0.15 or d_ground >= -eff_margin or ios_slot >= 0.20):
                         acq_thresh = min(0.20, self.acquisition_conf_thresh)
                     elif vt.class_label in ("car", "truck") and s_id not in ("zone_01", "zone_02") and (lower_overlap >= 0.15 or ios_slot >= 0.20):
                         acq_thresh = min(0.20, self.acquisition_conf_thresh)
@@ -944,29 +995,6 @@ class CarSlotTracker:
         if self.debug_diagnostics:
             self._last_assigned_slots = {k: v.track_id for k, v in assigned_slot_to_track.items()}
 
-        corridor_vehicles_in_frame: List[TrackResult] = []
-        for cv_t in tracks:
-            if getattr(cv_t, "class_label", None) in ("car", "truck", "bus"):
-                cv_x1, cv_y1, cv_x2, cv_y2 = cv_t.bbox
-                cv_y2_ai = cv_y2 if (sy <= 0.5) else (cv_y2 * (360.0 / 1080.0))
-                if cv_y2_ai >= 225.0:
-                    corridor_vehicles_in_frame.append(cv_t)
-
-        def is_slot_occluded_by_corridor(slot_geom_item: Dict[str, Any]) -> bool:
-            s_bbox = slot_geom_item["bbox"]
-            s_xmin, s_ymin, s_xmax, s_ymax = s_bbox
-            slot_w = max(1.0, s_xmax - s_xmin)
-            for cv in corridor_vehicles_in_frame:
-                cx1, cy1, cx2, cy2 = cv.bbox
-                c_y1_ai = cy1 if (sy <= 0.5) else (cy1 * (360.0 / 1080.0))
-                if c_y1_ai <= (s_ymax + 15.0):
-                    ix1 = max(s_xmin, cx1)
-                    ix2 = min(s_xmax, cx2)
-                    inter_w = max(0.0, ix2 - ix1)
-                    if (inter_w / slot_w) >= 0.35:
-                        return True
-            return False
-
         # Deteksi kendaraan koridor besar yang memotong kolom bayangan ROI_S1:
         # ROI_S1 = {(x, y) | x in [0, 180], y >= 170}
         # Kriteria potongan: x1 <= 180, x2 >= 50, dan y2 >= 190 (skala 640p)
@@ -1006,7 +1034,7 @@ class CarSlotTracker:
                 for cand_t in tracks:
                     cx1, cy1, cx2, cy2 = cand_t.bbox
                     c_y2_ai = cy2 if (sy <= 0.5) else (cy2 * (360.0 / 1080.0))
-                    if c_y2_ai >= 225.0:
+                    if c_y2_ai >= 215.0:
                         continue
                     ccx = float((cx1 + cx2) / 2.0)
                     cbw = max(1.0, cx2 - cx1)
@@ -1022,10 +1050,12 @@ class CarSlotTracker:
                     c_d_ground = max(c_d_probes)
                     c_lower_bbox = (cx1, cy1 + cbh * 0.5, cx2, cy2)
                     c_lower_overlap = bbox_polygon_overlap_ratio(c_lower_bbox, pts_scaled)
+                    c_ios = bbox_polygon_ios(cand_t.bbox, pts_scaled)
                     c_iou_anc = bbox_iou(cand_t.bbox, state.last_bbox) if state.last_bbox is not None else 0.0
                     if (
                         c_d_ground >= -slot_eff_margin
                         or c_lower_overlap >= 0.15
+                        or c_ios >= 0.12
                         or (c_d_ground >= -12.0 and c_lower_overlap >= 0.10)
                         or c_iou_anc >= 0.15
                     ):
