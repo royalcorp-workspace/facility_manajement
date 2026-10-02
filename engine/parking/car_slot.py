@@ -462,7 +462,7 @@ class CarSlotTracker:
         grace_period_sec: float = 3.0,
         iou_threshold: float = 0.35,
     ) -> bool:
-        effective_grace = 15.0 if (state.latch_occupied or getattr(state, "dwell_duration", 0.0) >= 10.0) else grace_period_sec
+        effective_grace = 15.0 if (state.latch_occupied or getattr(state, "dwell_duration", 0.0) >= 10.0) else max(5.0, grace_period_sec)
         if state.last_seen_time > 0:
             elapsed = current_time - state.last_seen_time
             if elapsed > effective_grace:
@@ -524,7 +524,8 @@ class CarSlotTracker:
         vehicle_tracks = [
             t
             for t in tracks
-            if (t.is_confirmed or is_warmup) and (t.class_label in self.vehicle_classes)
+            if (t.is_confirmed or is_warmup or getattr(t, "status", None) == "stationary" or t.confidence >= self.acquisition_conf_thresh)
+            and (t.class_label in self.vehicle_classes)
         ]
         vehicle_tracks = suppress_corridor_child_boxes(vehicle_tracks, all_frame_tracks=tracks, sy=sy)
 
@@ -680,6 +681,7 @@ class CarSlotTracker:
                 cy = float((y1 + y2) / 2.0)
                 bw = max(1.0, x2 - x1)
                 bh = max(1.0, y2 - y1)
+                y2_ai = y2 if (sy <= 0.5) else (y2 * (360.0 / 1080.0))
 
                 p_center = (cx, float(y2))
                 p_inset = (cx, float(y2 - bh * 0.05))
@@ -733,7 +735,6 @@ class CarSlotTracker:
                 )
 
                 # Tier 2 (Occluded View: mobil parkir y2_ai < 215 px terhalang kendaraan koridor)
-                y2_ai = y2 if (sy <= 0.5) else (y2 * (360.0 / 1080.0))
                 if is_occluded and y2_ai < 215.0:
                     upper_bbox = (x1, y1, x2, y1 + bh * 0.5)
                     upper_overlap = bbox_polygon_overlap_ratio(upper_bbox, pts_scaled)
@@ -1121,9 +1122,16 @@ class CarSlotTracker:
                     if matched_track.is_confirmed:
                         state.is_warmup_latch = False
 
+                    m_ios = bbox_polygon_ios(matched_track.bbox, pts_scaled)
+                    m_cx = float((matched_track.bbox[0] + matched_track.bbox[2]) / 2.0)
+                    m_p_center = (m_cx, float(matched_track.bbox[3]))
+                    m_d_center = cv2.pointPolygonTest(pts_scaled, m_p_center, True)
+                    is_solid_stationary = (m_ios >= 0.40 and m_d_center >= 0.0) or (is_occluded and m_ios >= 0.35)
+
                     if state.phase == "VACANT":
-                        if state.dwell_duration >= self.dwell_threshold_sec:
+                        if is_solid_stationary or state.dwell_duration >= self.dwell_threshold_sec:
                             state.phase = "OCCUPIED"
+                            state.dwell_duration = max(state.dwell_duration, self.dwell_threshold_sec)
                     elif state.phase == "ENTERING":
                         if state.dwell_duration >= self.dwell_threshold_sec:
                             state.phase = "OCCUPIED"
@@ -1236,7 +1244,7 @@ class CarSlotTracker:
                             state.tripwire_crossed_in_time = None
                             state.warmup_hits = 0
                 elif state.phase == "VACANT":
-                    if state.last_seen_time > 0 and (current_time - state.last_seen_time) > 2.0:
+                    if state.last_seen_time > 0 and (current_time - state.last_seen_time) > 5.0:
                         state.track_id = None
                         state.vehicle_class = None
                         state.first_seen_time = None

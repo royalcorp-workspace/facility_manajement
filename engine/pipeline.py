@@ -49,7 +49,7 @@ class CameraOrchestrator(threading.Thread):
         camera_index: int = 0,
         total_cameras: int = 1,
         initial_warmup_frames: int = 30,
-        quiescent_scan_interval: float = 15.0,
+        quiescent_scan_interval: float = 3.0,
     ) -> None:
         super().__init__(name=f"Orchestrator-{camera_config.camera_id}", daemon=True)
         self.camera_config = camera_config
@@ -242,6 +242,9 @@ class CameraOrchestrator(threading.Thread):
                     self.last_motion_detected_time = processed_frame.timestamp
                 else:
                     if should_run_dnn and reason == "motion":
+                        self.last_motion_detected_time = processed_frame.timestamp
+                    elif should_run_dnn and reason in ("heartbeat", "initial"):
+                        force_full_inference = True
                         self.last_motion_detected_time = processed_frame.timestamp
                     elif self.last_motion_detected_time > 0:
                         if (processed_frame.timestamp - self.last_motion_detected_time) >= self._quiescent_scan_interval:
