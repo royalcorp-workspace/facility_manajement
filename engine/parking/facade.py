@@ -23,7 +23,7 @@ class SmartParkingTracker:
     def __init__(
         self,
         total_slots: Optional[int] = None,
-        dwell_threshold_sec: float = 10.0,
+        dwell_threshold_sec: float = 3.0,
         vehicle_classes: Optional[Set[str]] = None,
         parking_mode: str = "slot",
         block_capacity: int = 30,
@@ -36,7 +36,7 @@ class SmartParkingTracker:
         debug_snapshot_max_files: int = 300,
         debug_snapshot_min_interval_s: float = 10.0,
         debug_snapshot_dir: str = "logs/snapshots",
-        acquisition_conf_thresh: float = 0.32,
+        acquisition_conf_thresh: float = 0.25,
         retention_conf_thresh: float = 0.20,
         wheel_contact_margin_px: float = 0.0,
         corridor_obstruction_dwell_sec: float = 60.0,

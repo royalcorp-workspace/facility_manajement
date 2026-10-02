@@ -92,7 +92,7 @@ class CameraOrchestrator(threading.Thread):
         _debug_snap_min_int = float(getattr(self.camera_config, "debug_snapshot_min_interval_s", 10.0) or 10.0)
 
         self.parking_tracker = parking_tracker or SmartParkingTracker(
-            dwell_threshold_sec=10.0,
+            dwell_threshold_sec=3.0,
             vehicle_classes=parking_classes,
             parking_mode=_parking_mode,
             block_capacity=_block_capacity,

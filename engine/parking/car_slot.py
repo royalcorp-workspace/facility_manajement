@@ -18,7 +18,7 @@ import numpy as np
 from engine.config_loader import ROIZone, TripwireRule
 from engine.geometry import bbox_bottom_center, bbox_iou, point_in_polygon, scale_points
 from engine.parking.base import SlotState
-from engine.parking.spatial import bbox_ios, bbox_polygon_overlap_ratio
+from engine.parking.spatial import bbox_ios, bbox_polygon_ios, bbox_polygon_overlap_ratio
 from engine.tracker_interface import TrackResult
 
 
@@ -51,10 +51,18 @@ def suppress_corridor_child_boxes(
     surviving_tracks: List[TrackResult] = []
     for t in tracks:
         bx1, by1, bx2, by2 = t.bbox
+        t_scale = (360.0 / 1080.0) if (by2 > 360.0 or bx2 > 640.0) else 1.0
+        y2_ai = by2 * t_scale
+        x1_ai = bx1 * t_scale
         bw = max(0.0, bx2 - bx1)
         bh = max(0.0, by2 - by1)
         area_i = bw * bh
         if area_i <= 0.0:
+            continue
+
+        # Mobil di slot parkir (y2_ai < 215.0) di ujung kanan (S8: x1_ai >= 480.0) jangan pernah dihapus sebagai child
+        if y2_ai < 215.0 and x1_ai >= 480.0:
+            surviving_tracks.append(t)
             continue
 
         is_child = False
@@ -63,6 +71,11 @@ def suppress_corridor_child_boxes(
                 continue
             parent_area = max(1.0, (px2 - px1) * (py2 - py1))
             if area_i >= parent_area:
+                continue
+
+            # Kendaraan koridor depan (y2_parent >= 225.0) tidak boleh mengeliminasi mobil parkir belakang (y2_cand < 215.0)
+            p_scale = (360.0 / 1080.0) if (py2 > 360.0 or px2 > 640.0) else 1.0
+            if (py2 * p_scale) >= 225.0 and y2_ai < 215.0:
                 continue
 
             ix1 = max(bx1, px1)
@@ -90,9 +103,9 @@ class CarSlotTracker:
     def __init__(
         self,
         total_slots: Optional[int] = None,
-        dwell_threshold_sec: float = 10.0,
+        dwell_threshold_sec: float = 3.0,
         vehicle_classes: Optional[Set[str]] = None,
-        acquisition_conf_thresh: float = 0.32,
+        acquisition_conf_thresh: float = 0.25,
         retention_conf_thresh: float = 0.20,
         wheel_contact_margin_px: float = 0.0,
         corridor_obstruction_dwell_sec: float = 60.0,
@@ -478,13 +491,9 @@ class CarSlotTracker:
 
         lower_bbox = (x1, y1 + bh * 0.5, x2, y2)
         lower_overlap = bbox_polygon_overlap_ratio(lower_bbox, pts_scaled)
+        ios_slot = bbox_polygon_ios(new_track.bbox, pts_scaled)
 
-        if getattr(state, "slot_id", None) == "zone_08":
-            max_x = float(np.max(pts_scaled[:, 0])) if len(pts_scaled) > 0 else 0.0
-            if (max_x > 1000.0 and cx > 1810.0) or (max_x <= 1000.0 and cx > 603.3):
-                return False
-
-        if d_ground >= -12.0 or lower_overlap >= 0.20:
+        if d_ground >= -15.0 or lower_overlap >= 0.15 or ios_slot >= 0.20:
             return True
         if state.last_bbox is not None:
             iou = bbox_iou(new_track.bbox, state.last_bbox)
@@ -663,23 +672,24 @@ class CarSlotTracker:
 
                 lower_bbox = (x1, y1 + bh * 0.5, x2, y2)
                 lower_overlap = bbox_polygon_overlap_ratio(lower_bbox, pts_scaled)
+                ios_slot = bbox_polygon_ios(vt.bbox, pts_scaled)
 
                 is_class_allowed = (vt.class_label in allowed_classes)
                 if not is_class_allowed:
-                    if s_id != "zone_01" and vt.class_label in ("truck", "bus") and (d_center >= 0.0 or lower_overlap >= 0.35):
+                    if s_id != "zone_01" and vt.class_label in ("truck", "bus") and (d_center >= 0.0 or lower_overlap >= 0.35 or ios_slot >= 0.25):
                         is_class_allowed = True
                 if not is_class_allowed:
                     continue
 
                 eff_margin = max(8.0, self.wheel_contact_margin_px)
+                # Pendekatan Hibrida: IoS >= 0.25 ATAU bottom_center berada di dalam poligon
+                is_bottom_in = (d_center >= 0.0)
+                is_spatial_occupancy = (ios_slot >= 0.25) or is_bottom_in
                 has_stance_contact = (
-                    (d_ground >= -eff_margin)
-                    or (lower_overlap >= 0.15)
-                    or (d_ground >= -12.0 and lower_overlap >= 0.10)
+                    is_spatial_occupancy
+                    or (ios_slot >= 0.18 and d_ground >= -eff_margin)
+                    or (lower_overlap >= 0.15 and d_center >= -eff_margin)
                 )
-
-                cx_1080p = (cx / sx) if sx > 0 else cx
-                is_outside_s8 = (s_id == "zone_08" and cx_1080p > 1810.0)
 
                 y2_ai = y2 if (sy <= 0.5) else (y2 * (360.0 / 1080.0))
                 if y2_ai >= 225.0:
@@ -710,26 +720,23 @@ class CarSlotTracker:
                     min_x_s3 = float(np.min(pts_scaled[:, 0])) if len(pts_scaled) > 0 else 148.0
                     # Wajibkan titik tapak kontak tanah strictly di dalam poligon (d_ground >= 0.0 px)
                     # dan tolak jika centroid mobil berada di luar span kiri poligon S3 (cx < 148.0 px)
-                    if d_ground < 0.0 or cx < min_x_s3 or cx < 148.0:
+                    if (d_ground < 0.0 and ios_slot < 0.25) or cx < min_x_s3 or cx < 148.0:
                         continue
 
                 if is_vacant_slot:
-                    if s_id == "zone_04" and vt.class_label in ("car", "truck") and (lower_overlap >= 0.15 or d_ground >= -eff_margin):
+                    if s_id == "zone_04" and vt.class_label in ("car", "truck") and (lower_overlap >= 0.15 or d_ground >= -eff_margin or ios_slot >= 0.20):
                         acq_thresh = min(0.20, self.acquisition_conf_thresh)
-                    elif vt.class_label in ("car", "truck") and s_id not in ("zone_01", "zone_02") and lower_overlap >= 0.15:
+                    elif vt.class_label in ("car", "truck") and s_id not in ("zone_01", "zone_02") and (lower_overlap >= 0.15 or ios_slot >= 0.20):
                         acq_thresh = min(0.20, self.acquisition_conf_thresh)
                     else:
                         acq_thresh = self.acquisition_conf_thresh
 
                     conf_ok = (vt.confidence >= acq_thresh)
-                    passed_gate = conf_ok and has_stance_contact and (d_ground >= -eff_margin)
+                    passed_gate = conf_ok and has_stance_contact and is_spatial_occupancy
                 else:
                     acq_thresh = self.acquisition_conf_thresh
                     conf_ok = (vt.confidence >= self.retention_conf_thresh)
-                    passed_gate = (conf_ok and (has_stance_contact or d_ground >= -12.0)) or (iou_anchor >= anchor_threshold)
-
-                if is_outside_s8:
-                    passed_gate = False
+                    passed_gate = (conf_ok and (has_stance_contact or d_ground >= -12.0 or ios_slot >= 0.18)) or (iou_anchor >= anchor_threshold)
 
                 if self.debug_diagnostics and s_id == self.debug_target_zone:
                     try:
@@ -829,6 +836,7 @@ class CarSlotTracker:
                         (d_ground * 3.0)
                         - (dist_norm * 30.0)
                         + (iou_slot * 30.0)
+                        + (ios_slot * 35.0)
                         + (lower_overlap * 20.0)
                         + (ioz_stance * 15.0)
                         + (iou_anchor * 30.0)
@@ -1038,7 +1046,7 @@ class CarSlotTracker:
                     state.last_bbox = matched_track.bbox
                     state.polygon_clear_since = None
 
-                elif state.phase in ("OCCUPIED", "ENTERING", "LEAVING") and self._is_same_vehicle(
+                elif state.phase in ("OCCUPIED", "ENTERING", "LEAVING", "VACANT") and self._is_same_vehicle(
                     state, matched_track, pts_scaled, current_time
                 ):
                     state.track_id = matched_track.track_id
@@ -1048,6 +1056,9 @@ class CarSlotTracker:
                     state.polygon_clear_since = None
                     if state.first_seen_time is not None:
                         state.dwell_duration = current_time - state.first_seen_time
+                    else:
+                        state.first_seen_time = current_time
+                        state.dwell_duration = 0.0
 
                 else:
                     if slot_id == "zone_01" and state.phase == "OCCUPIED" and (state.dwell_duration >= 10.0 or state.latch_occupied):
